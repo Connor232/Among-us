@@ -52,9 +52,9 @@ const MapOverlay: React.FC<MapOverlayProps> = ({ players, localPlayerId, tasks, 
           }} />
 
           {/* Draw Rooms Areas */}
-          {mapData.rooms.map((room, idx) => (
+          {mapData.rooms.map((room) => (
             <div 
-              key={idx}
+              key={room.name}
               className="absolute bg-blue-400/10 border-2 border-blue-400/20 flex items-center justify-center rounded-sm"
               style={{
                 left: (room.pos.x - room.size.w/2) * SCALE_UI,
@@ -70,9 +70,9 @@ const MapOverlay: React.FC<MapOverlayProps> = ({ players, localPlayerId, tasks, 
           ))}
 
           {/* Draw Walls */}
-          {mapData.walls.map((wall, idx) => (
+          {mapData.walls.map((wall) => (
             <div 
-              key={idx}
+              key={`${wall.x}-${wall.y}-${wall.w}-${wall.h}`}
               className="absolute bg-slate-500/50"
               style={{
                 left: wall.x * SCALE_UI,

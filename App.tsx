@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { Stars } from '@react-three/drei';
-import { GameState, Player, PlayerRole, Vector2D, Task, DeadBody, Lobby, Vent, LobbySettings, SabotageType } from './types';
+import { GameState, Player, PlayerRole, Vector2D, Task, DeadBody, Lobby, Vent, LobbySettings, SabotageType, Message } from './types';
 import { 
   PLAYER_COLORS, MAP_SIZE, 
   AVAILABLE_MAPS, MAPS_DATA, KILL_DISTANCE, MAX_LOBBY_CAPACITY
@@ -12,6 +12,9 @@ import MeetingRoom from './components/MeetingRoom';
 import TaskUI from './components/TaskUI';
 import MapOverlay from './components/MapOverlay';
 import PlayerModel from './components/PlayerModel';
+import ChatOverlay from './components/ChatOverlay';
+import { motion, AnimatePresence } from 'framer-motion';
+import { CheckCircle2, AlertTriangle } from 'lucide-react';
 
 const MemoizedMeetingRoom = React.memo(MeetingRoom);
 const MemoizedTaskUI = React.memo(TaskUI);
@@ -21,23 +24,133 @@ const DEFAULT_SETTINGS: LobbySettings = {
   killCooldown: 25,
   moveSpeed: 0.22,
   visionRadius: 15,
-  impostorCount: 1
+  impostorCount: 1,
+  meetingTime: 30,
+  ventCooldown: 10
 };
 
-// Unique channel name for this version to prevent interference with old cache
-const syncChannel = new BroadcastChannel('among_us_3d_robust_v10');
+const SETTINGS_STORAGE_KEY = 'among_us_3d_lobby_settings';
+
+const getSavedSettings = (): LobbySettings => {
+  try {
+    const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (saved) return { ...DEFAULT_SETTINGS, ...JSON.parse(saved) };
+  } catch (e) {
+    console.error('Failed to load settings from localStorage', e);
+  }
+  return DEFAULT_SETTINGS;
+};
+
+// Safe BroadcastChannel initialization
+const createSyncChannel = () => {
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      return new BroadcastChannel('among_us_3d_robust_v11');
+    }
+  } catch (e) {
+    console.warn('BroadcastChannel not available', e);
+  }
+  return null;
+};
+
+const syncChannel = createSyncChannel();
 
 interface ExtendedPlayer extends Player {
   joinedAt: number;
   lastSeen?: number; // Heartbeat tracking
   aiTarget?: Vector2D | null;
+  aiStuckTimer?: number;
+  lastVentTime?: number;
 }
 
 interface DiscoveredLobby extends Lobby {
   lastSeen: number;
 }
 
-const App: React.FC = () => {
+class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, error: any}> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("App Error:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="h-screen bg-black text-white flex flex-col items-center justify-center p-10 font-mono">
+          <h1 className="text-4xl mb-4 text-red-500">Something went wrong</h1>
+          <pre className="bg-gray-900 p-4 rounded overflow-auto max-w-full">
+            {this.state.error?.stack || String(this.state.error)}
+          </pre>
+          <button onClick={() => window.location.reload()} className="mt-8 bg-blue-600 px-6 py-2 rounded">Reload</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const AppContent: React.FC = () => {
+  const wsRef = useRef<WebSocket | null>(null);
+  const handleMessageRef = useRef<(e: any) => void>(() => {});
+
+  useEffect(() => {
+    console.log("AppContent mounted. GameState:", gameState);
+  }, []);
+
+  const [wsConnected, setWsConnected] = useState(false);
+
+  useEffect(() => {
+    console.log("Initializing WebSocket connection...");
+    try {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${protocol}//${window.location.host}`);
+      wsRef.current = ws;
+
+      ws.onmessage = (e) => {
+        try {
+          const m = JSON.parse(e.data);
+          handleMessageRef.current({ data: m });
+        } catch (err) {
+          console.error("Failed to parse WebSocket message", err);
+        }
+      };
+
+      ws.onopen = () => {
+        console.log("Connected to WebSocket server");
+        setWsConnected(true);
+      };
+
+      ws.onerror = (err) => {
+        console.warn("WebSocket connection failed. Running in Local Mode.", err);
+        setWsConnected(false);
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+      };
+
+      return () => {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+      };
+    } catch (e) {
+      console.error("WebSocket initialization failed", e);
+    }
+  }, []);
+
+  const broadcast = useCallback((msg: any) => {
+    if (syncChannel) syncChannel.postMessage(msg);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(msg));
+    }
+  }, []);
+
   // --- CORE STATE ---
   const [gameState, setGameState] = useState<GameState>(GameState.MENU);
   const [players, setPlayers] = useState<ExtendedPlayer[]>([]);
@@ -49,9 +162,13 @@ const App: React.FC = () => {
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [reporterId, setReporterId] = useState<string | null>(null);
   const [winner, setWinner] = useState<PlayerRole | null>(null);
+  const [chatMessages, setChatMessages] = useState<Message[]>([]);
+  const [showChat, setShowChat] = useState(false);
+  const [votes, setVotes] = useState<Record<string, string>>({});
   
   // --- COOLDOWNS & SABOTAGES ---
   const [killCooldown, setKillCooldown] = useState(0);
+  const [ventCooldown, setVentCooldown] = useState(0);
   const [sabotageCooldown, setSabotageCooldown] = useState(0);
   const [activeSabotage, setActiveSabotage] = useState<SabotageType | null>(null);
   const [sabotageTimer, setSabotageTimer] = useState(0);
@@ -66,6 +183,7 @@ const App: React.FC = () => {
   const [showKillScreen, setShowKillScreen] = useState(false);
   const [ejectionText, setEjectionText] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [lastCompletedTask, setLastCompletedTask] = useState<string | null>(null);
   
   // --- LOBBY BROWSER ---
   const [discoveredLobbies, setDiscoveredLobbies] = useState<Record<string, DiscoveredLobby>>({});
@@ -83,11 +201,11 @@ const App: React.FC = () => {
   const pendingJoinRef = useRef<{ code: string; active: boolean; attempts: number }>({ code: '', active: false, attempts: 0 });
   
   // Use a ref for the state to access current values in the message loop without re-running effects
-  const stateRef = useRef({ players, gameState, currentLobby, tasks, deadBodies, activeTask, showRoleReveal, ejectionText });
+  const stateRef = useRef({ players, gameState, currentLobby, tasks, deadBodies, activeTask, showRoleReveal, ejectionText, votes });
 
   useEffect(() => {
-    stateRef.current = { players, gameState, currentLobby, tasks, deadBodies, activeTask, showRoleReveal, ejectionText };
-  }, [players, gameState, currentLobby, tasks, deadBodies, activeTask, showRoleReveal, ejectionText]);
+    stateRef.current = { players, gameState, currentLobby, tasks, deadBodies, activeTask, showRoleReveal, ejectionText, votes };
+  }, [players, gameState, currentLobby, tasks, deadBodies, activeTask, showRoleReveal, ejectionText, votes]);
 
   // --- DERIVED ---
   const local = useMemo(() => players.find(p => p.id === localPlayerId), [players, localPlayerId]);
@@ -112,9 +230,12 @@ const App: React.FC = () => {
   }, [currentLobby?.map, selectedMap]);
 
   const taskProgress = useMemo(() => {
-    if (tasks.length === 0) return 0;
-    return (tasks.filter(t => t.completed).length / tasks.length) * 100;
-  }, [tasks]);
+    const crewmates = players.filter(p => p.role === PlayerRole.CREWMATE);
+    if (crewmates.length === 0) return 0;
+    const total = crewmates.reduce((sum, p) => sum + (p.totalTasks || 0), 0);
+    const completed = crewmates.reduce((sum, p) => sum + (p.tasksCompleted || 0), 0);
+    return total > 0 ? (completed / total) * 100 : 0;
+  }, [players]);
 
   const usedColorsByOthers = useMemo(() => {
     return new Set(players.filter(p => p.id !== localPlayerId).map(p => p.color));
@@ -141,14 +262,41 @@ const App: React.FC = () => {
     return false;
   }, [currentMapData]);
 
-  const getSafeSpawn = useCallback((center: Vector2D, spread: number = 3.0): Vector2D => {
-    for (let attempt = 0; attempt < 100; attempt++) {
+  const getSafeSpawn = useCallback((center: Vector2D, spread: number = 4.0): Vector2D => {
+    // Helper to check if a position is safe with a small buffer
+    const isSafeWithBuffer = (pos: Vector2D, buffer: number) => {
+      const points = [
+        pos,
+        { x: pos.x + buffer, y: pos.y },
+        { x: pos.x - buffer, y: pos.y },
+        { x: pos.x, y: pos.y + buffer },
+        { x: pos.x, y: pos.y - buffer }
+      ];
+      return points.every(p => !checkCollision(p));
+    };
+
+    // Try multiple attempts with increasing spread and decreasing buffer
+    for (let attempt = 0; attempt < 150; attempt++) {
+      const currentSpread = spread + (attempt > 50 ? (attempt - 50) * 0.15 : 0);
+      const buffer = attempt < 50 ? 0.3 : (attempt < 100 ? 0.15 : 0.05);
+      
       const testPos = {
-        x: center.x + (Math.random() - 0.5) * spread,
-        y: center.y + (Math.random() - 0.5) * spread
+        x: center.x + (Math.random() - 0.5) * currentSpread,
+        y: center.y + (Math.random() - 0.5) * currentSpread
+      };
+      
+      if (isSafeWithBuffer(testPos, buffer)) return testPos;
+    }
+    
+    // Last resort: find ANY safe spot by searching much wider
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const testPos = {
+        x: center.x + (Math.random() - 0.5) * 20,
+        y: center.y + (Math.random() - 0.5) * 20
       };
       if (!checkCollision(testPos)) return testPos;
     }
+
     return { ...center };
   }, [checkCollision]);
 
@@ -157,7 +305,7 @@ const App: React.FC = () => {
     const handleUnload = () => {
       const s = stateRef.current;
       if (s.currentLobby) {
-        syncChannel.postMessage({ 
+        broadcast({ 
           type: 'PLAYER_LEAVE', 
           lobbyId: s.currentLobby.id, 
           playerId: localPlayerId 
@@ -166,7 +314,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('beforeunload', handleUnload);
     return () => window.removeEventListener('beforeunload', handleUnload);
-  }, [localPlayerId]);
+  }, [localPlayerId, broadcast]);
 
   // --- HOST CLEANUP (PRUNING TIMED OUT PLAYERS) ---
   useEffect(() => {
@@ -176,17 +324,18 @@ const App: React.FC = () => {
       const now = Date.now();
       const s = stateRef.current;
       
-      // If a human player hasn't sent a POS_SYNC in > 5s, they likely disconnected/crashed
+      // If a human player hasn't sent a POS_SYNC in > 15s, they likely disconnected/crashed
       const disconnected = s.players.filter(p => 
         !p.isAI && 
         p.id !== localPlayerId && 
-        (!p.lastSeen || now - p.lastSeen > 5000)
+        (!p.lastSeen || now - p.lastSeen > 15000) &&
+        (now - p.joinedAt > 15000) // Grace period for new joins
       );
       
       if (disconnected.length > 0) {
         setPlayers(prev => prev.filter(p => !disconnected.find(d => d.id === p.id)));
         disconnected.forEach(d => {
-          syncChannel.postMessage({ type: 'PLAYER_LEAVE', lobbyId: s.currentLobby?.id, playerId: d.id });
+          broadcast({ type: 'PLAYER_LEAVE', lobbyId: s.currentLobby?.id, playerId: d.id });
         });
       }
     }, 2000);
@@ -198,12 +347,12 @@ const App: React.FC = () => {
   const broadcastLobby = useCallback(() => {
     const s = stateRef.current;
     if (isLocalHost && s.currentLobby && !s.currentLobby.isPrivate && s.gameState === GameState.LOBBY_WAITING) {
-      syncChannel.postMessage({ 
+      broadcast({ 
         type: 'LOBBY_ANNOUNCE', 
         lobby: { ...s.currentLobby, playerCount: s.players.length } 
       });
     }
-  }, [isLocalHost]);
+  }, [isLocalHost, broadcast]);
 
   useEffect(() => {
     if (isLocalHost && currentLobby && !currentLobby.isPrivate && gameState === GameState.LOBBY_WAITING) {
@@ -234,9 +383,9 @@ const App: React.FC = () => {
   const refreshLobbies = useCallback(() => {
     setIsRefreshing(true);
     setDiscoveredLobbies({});
-    syncChannel.postMessage({ type: 'LOBBY_DISCOVERY_REQ' });
+    broadcast({ type: 'LOBBY_DISCOVERY_REQ' });
     setTimeout(() => setIsRefreshing(false), 1200);
-  }, []);
+  }, [broadcast]);
 
   // --- DYNAMIC PROXIMITY ---
   const nearbyTask = useMemo(() => {
@@ -262,20 +411,30 @@ const App: React.FC = () => {
   // --- ACTIONS ---
   const report = useCallback((rid: string = localPlayerId) => {
     if (stateRef.current.gameState !== GameState.PLAYING) return;
-    syncChannel.postMessage({ type: 'MEETING_TRIGGER', lobbyId: currentLobby?.id, reporterId: rid });
+    
+    // Update ref immediately to prevent stale POS_SYNC
+    stateRef.current = { ...stateRef.current, gameState: GameState.MEETING };
+    
+    broadcast({ type: 'MEETING_TRIGGER', lobbyId: currentLobby?.id, reporterId: rid });
     setReporterId(rid);
+    setChatMessages([]);
+    setVotes({});
     setGameState(GameState.MEETING);
     setActiveTask(null);
     setShowMap(false);
     setShowSabotageMenu(false);
     setActiveSabotage(null);
-  }, [currentLobby, localPlayerId]);
+  }, [currentLobby, localPlayerId, broadcast]);
 
   const useAction = useCallback(() => {
     const l = stateRef.current.players.find(pl => pl.id === localPlayerId);
     if (!l || !l.isAlive || stateRef.current.gameState !== GameState.PLAYING) return;
     if (nearbyVent && l.role === PlayerRole.IMPOSTOR) {
+      if (!l.isInVent && ventCooldown > 0) return;
       setPlayers(prev => prev.map(pl => pl.id === localPlayerId ? { ...pl, isInVent: !pl.isInVent, pos: pl.isInVent ? pl.pos : { ...nearbyVent.pos } } : pl));
+      if (l.isInVent) {
+        setVentCooldown(activeSettings.ventCooldown * 1000);
+      }
       return;
     }
     if (isNearMeetingButton) {
@@ -290,10 +449,14 @@ const App: React.FC = () => {
   const handleTaskComplete = useCallback(() => {
     if (!activeTask || !local || local.role === PlayerRole.IMPOSTOR) return;
     const taskId = activeTask.id;
+    const taskName = activeTask.name;
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: true } : t));
+    setPlayers(prev => prev.map(p => p.id === localPlayerId ? { ...p, tasksCompleted: p.tasksCompleted + 1 } : p));
     setActiveTask(null);
-    syncChannel.postMessage({ type: 'TASK_SYNC', lobbyId: currentLobby?.id, taskId });
-  }, [activeTask, local, currentLobby?.id]);
+    setLastCompletedTask(taskName);
+    setTimeout(() => setLastCompletedTask(null), 3000);
+    broadcast({ type: 'TASK_SYNC', lobbyId: currentLobby?.id, taskId, senderId: localPlayerId });
+  }, [activeTask, local, currentLobby?.id, broadcast, localPlayerId]);
 
   const handleTaskClose = useCallback(() => {
     setActiveTask(null);
@@ -305,25 +468,25 @@ const App: React.FC = () => {
     if (!l || l.role !== PlayerRole.IMPOSTOR || !l.isAlive || killCooldown > 0 || currentGS !== GameState.PLAYING || l.isInVent) return;
     const target = currentPlayers.find(pl => pl.id !== l.id && pl.isAlive && !pl.isInVent && Math.hypot(pl.pos.x - l.pos.x, pl.pos.y - l.pos.y) < KILL_DISTANCE);
     if (target) {
-      const body: DeadBody = { id: `body-${Date.now()}`, playerId: target.id, pos: { ...target.pos }, color: target.color };
+      const body: DeadBody = { id: `body-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`, playerId: target.id, pos: { ...target.pos }, color: target.color };
       setPlayers(prev => prev.map(pl => pl.id === target.id ? { ...pl, isAlive: false } : pl));
       setDeadBodies(prev => [...prev, body]);
       setKillCooldown(activeSettings.killCooldown * 1000);
       setShowKillScreen(true);
       setTimeout(() => setShowKillScreen(false), 500);
-      syncChannel.postMessage({ type: 'KILL_EVENT', lobbyId: currentLobby?.id, targetId: target.id, body });
+      broadcast({ type: 'KILL_EVENT', lobbyId: currentLobby?.id, targetId: target.id, body });
     }
-  }, [localPlayerId, killCooldown, activeSettings.killCooldown, currentLobby]);
+  }, [localPlayerId, killCooldown, activeSettings.killCooldown, currentLobby, broadcast]);
 
   const triggerSabotage = useCallback((type: SabotageType) => {
     if (sabotageCooldown > 0 || activeSabotage || local?.role !== PlayerRole.IMPOSTOR || !local.isAlive) return;
     const duration = 30;
-    syncChannel.postMessage({ type: 'SABOTAGE_START', lobbyId: currentLobby?.id, sabotageType: type, duration });
+    broadcast({ type: 'SABOTAGE_START', lobbyId: currentLobby?.id, sabotageType: type, duration });
     setActiveSabotage(type);
     setSabotageTimer(duration);
     setSabotageCooldown(45000);
     setShowSabotageMenu(false);
-  }, [sabotageCooldown, activeSabotage, local, currentLobby]);
+  }, [sabotageCooldown, activeSabotage, local, currentLobby, broadcast]);
 
   const addBot = useCallback(() => {
     if (!isLocalHost) return;
@@ -338,17 +501,17 @@ const App: React.FC = () => {
     const newBot: ExtendedPlayer = {
       id: botId, name: botName, color: botColor, role: PlayerRole.CREWMATE,
       isAI: true, isAlive: true, pos: safePos,
-      lastKnownPos: { x: 0, y: 0 }, tasksCompleted: 0, totalTasks: 4, joinedAt: Date.now(), lastSeen: Date.now()
+      lastKnownPos: { x: 0, y: 0 }, tasksCompleted: 0, totalTasks: 5, joinedAt: Date.now(), lastSeen: Date.now()
     };
     setPlayers(prev => [...prev, newBot]);
-    if (currentLobby) syncChannel.postMessage({ type: 'BOT_ADD', lobbyId: currentLobby.id, bot: newBot });
-  }, [isLocalHost, currentMapData.emergencyButtonPos, currentLobby, getSafeSpawn]);
+    if (currentLobby) broadcast({ type: 'BOT_ADD', lobbyId: currentLobby.id, bot: newBot });
+  }, [isLocalHost, currentMapData.emergencyButtonPos, currentLobby, getSafeSpawn, broadcast]);
 
   const removeBot = useCallback((botId: string) => {
     if (!isLocalHost) return;
     setPlayers(prev => prev.filter(p => p.id !== botId));
-    if (currentLobby) syncChannel.postMessage({ type: 'PLAYER_LEAVE', lobbyId: currentLobby.id, playerId: botId });
-  }, [isLocalHost, currentLobby]);
+    if (currentLobby) broadcast({ type: 'PLAYER_LEAVE', lobbyId: currentLobby.id, playerId: botId });
+  }, [isLocalHost, currentLobby, broadcast]);
 
   const clearAllBots = useCallback(() => {
     if (!isLocalHost) return;
@@ -356,10 +519,10 @@ const App: React.FC = () => {
     setPlayers(prev => prev.filter(p => !p.isAI));
     if (currentLobby) {
       botIds.forEach(id => {
-        syncChannel.postMessage({ type: 'PLAYER_LEAVE', lobbyId: currentLobby.id, playerId: id });
+        broadcast({ type: 'PLAYER_LEAVE', lobbyId: currentLobby.id, playerId: id });
       });
     }
-  }, [isLocalHost, players, currentLobby]);
+  }, [isLocalHost, players, currentLobby, broadcast]);
 
   const changeLocalColor = useCallback((color: string) => {
     const isTaken = usedColorsByOthers.has(color);
@@ -373,26 +536,30 @@ const App: React.FC = () => {
     const nextPrivate = !currentLobby.isPrivate;
     const nextLobby = { ...currentLobby, isPrivate: nextPrivate };
     setCurrentLobby(nextLobby);
-    syncChannel.postMessage({ type: 'LOBBY_VISIBILITY_CHANGE', lobbyId: currentLobby.id, isPrivate: nextPrivate });
+    broadcast({ type: 'LOBBY_VISIBILITY_CHANGE', lobbyId: currentLobby.id, isPrivate: nextPrivate });
     if (!nextPrivate) broadcastLobby();
-  }, [isLocalHost, currentLobby, broadcastLobby]);
+  }, [isLocalHost, currentLobby, broadcastLobby, broadcast]);
 
   const handleSettingsChange = useCallback((newSettings: Partial<LobbySettings>) => {
     if (!isLocalHost || !currentLobby) return;
     const updatedSettings = { ...currentLobby.settings, ...newSettings };
     setCurrentLobby(prev => prev ? { ...prev, settings: updatedSettings } : null);
-    syncChannel.postMessage({ type: 'SETTINGS_SYNC', lobbyId: currentLobby.id, settings: updatedSettings });
-  }, [isLocalHost, currentLobby]);
+    broadcast({ type: 'SETTINGS_SYNC', lobbyId: currentLobby.id, settings: updatedSettings });
+    
+    // Save to localStorage
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(updatedSettings));
+  }, [isLocalHost, currentLobby, broadcast]);
 
   const leaveGame = useCallback(() => {
-    if (currentLobby) syncChannel.postMessage({ type: 'PLAYER_LEAVE', lobbyId: currentLobby.id, playerId: localPlayerId });
+    if (currentLobby) broadcast({ type: 'PLAYER_LEAVE', lobbyId: currentLobby.id, playerId: localPlayerId });
     setGameState(GameState.MENU);
     setCurrentLobby(null);
     setPlayers([]);
     setTasks([]);
     setDeadBodies([]);
     setWinner(null);
-  }, [currentLobby, localPlayerId]);
+    setChatMessages([]);
+  }, [currentLobby, localPlayerId, broadcast]);
 
   const startMatch = useCallback(() => {
     if (!currentLobby || !isLocalHost || players.length < 4) return;
@@ -403,13 +570,24 @@ const App: React.FC = () => {
     const newPlayers = players.map(p => {
       return { 
         ...p, role: roles[p.id], isAlive: true, isInVent: false,
+        tasksCompleted: 0, totalTasks: 5,
         pos: getSafeSpawn(spawn, 6.0)
       };
     });
     const newTasks = [...currentMapData.tasks].sort(() => Math.random() - 0.5).slice(0, 5).map(t => ({ ...t, completed: false }));
-    syncChannel.postMessage({ type: 'GAME_START', lobbyId: currentLobby.id, players: newPlayers, tasks: newTasks });
+    
+    // CRITICAL: Update ref immediately to prevent the engine loop from sending stale lobby positions in POS_SYNC
+    stateRef.current = { 
+      ...stateRef.current, 
+      players: newPlayers, 
+      gameState: GameState.PLAYING, 
+      tasks: newTasks 
+    };
+
+    broadcast({ type: 'GAME_START', lobbyId: currentLobby.id, players: newPlayers, tasks: newTasks });
     setPlayers(newPlayers);
     setTasks(newTasks);
+    setChatMessages([]);
     setGameState(GameState.PLAYING);
     setShowRoleReveal(true);
     setTimeout(() => setShowRoleReveal(false), 4500);
@@ -424,13 +602,29 @@ const App: React.FC = () => {
     setJoinCodeInput(cleanCode);
     pendingJoinRef.current = { code: cleanCode, active: true, attempts: 0 };
     
-    // Set immediate default local player state for joining to ensure we are ready to receive
-    setPlayers([{ id: localPlayerId, name: playerName, color: playerColor, role: PlayerRole.CREWMATE, isAI: false, isAlive: true, pos: {x:0,y:0}, lastKnownPos:{x:0,y:0}, tasksCompleted: 0, totalTasks: 4, joinedAt: localJoinedAt }]);
+    const initialPlayers: ExtendedPlayer[] = [{ id: localPlayerId, name: playerName, color: playerColor, role: PlayerRole.CREWMATE, isAI: false, isAlive: true, pos: { ...currentMapData.emergencyButtonPos }, lastKnownPos: { ...currentMapData.emergencyButtonPos }, tasksCompleted: 0, totalTasks: 5, joinedAt: localJoinedAt }];
+    
+    // Update ref immediately
+    stateRef.current = { ...stateRef.current, players: initialPlayers };
+    
+    setPlayers(initialPlayers);
     
     // Function to broadcast join request
     const sendJoin = () => {
       if (!pendingJoinRef.current.active) return;
-      syncChannel.postMessage({ type: 'JOIN_REQ', code: cleanCode, joinerId: localPlayerId });
+      
+      // Ensure we are in the room on the server to receive responses
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'JOIN_ROOM', roomCode: cleanCode }));
+      }
+
+      broadcast({ 
+        type: 'JOIN_REQ', 
+        code: cleanCode, 
+        joinerId: localPlayerId,
+        joinerName: playerName,
+        joinerColor: playerColor
+      });
       pendingJoinRef.current.attempts++;
       
       // Stop after 8 attempts (approx 8 seconds)
@@ -452,6 +646,32 @@ const App: React.FC = () => {
     handleJoinAttempt(lobby.code);
   }, [handleJoinAttempt]);
 
+  const sendChatMessage = useCallback((content: string) => {
+    const isGhost = local?.isAlive === false;
+    const msg: Message = { id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`, senderId: localPlayerId, senderName: playerName, content, isGhost };
+    setChatMessages(prev => [...prev, msg]);
+    broadcast({ type: 'CHAT_MESSAGE', lobbyId: currentLobby?.id, message: msg });
+  }, [localPlayerId, playerName, currentLobby?.id, broadcast, local?.isAlive]);
+
+  const castVote = useCallback((targetId: string, voterId: string = localPlayerId) => {
+    setVotes(prev => ({ ...prev, [voterId]: targetId }));
+    broadcast({ type: 'VOTE_CAST', lobbyId: currentLobby?.id, voterId, targetId });
+  }, [localPlayerId, currentLobby?.id, broadcast]);
+
+  const handleMeetingVote = useCallback((id: string | null) => {
+    setDeadBodies([]); 
+    setVotes({});
+    setGameState(GameState.PLAYING);
+    if (id) {
+      const victim = players.find(p => p.id === id);
+      setEjectionText(victim ? `${victim.name} was ${victim.role === PlayerRole.IMPOSTOR ? 'the Impostor' : 'not the Impostor'}.` : 'No one was ejected.');
+      setPlayers(prev => prev.map(p => p.id === id ? { ...p, isAlive: false } : p));
+    } else {
+      setEjectionText('No one was ejected (Tie or Skip).');
+    }
+    setTimeout(() => setEjectionText(null), 5000);
+  }, [players]);
+
   // --- ENGINE LOOP ---
   useEffect(() => {
     const loop = (time: number) => {
@@ -460,70 +680,171 @@ const App: React.FC = () => {
       const s = stateRef.current;
       
       if (s.gameState === GameState.PLAYING || s.gameState === GameState.LOBBY_WAITING) {
-        setPlayers(prev => {
-          const next = [...prev];
-          const localIdx = next.findIndex(p => p.id === localPlayerId);
-          const isInputLocked = !!s.activeTask || s.showRoleReveal || !!s.ejectionText;
-          
-          if (localIdx !== -1 && !isInputLocked && !next[localIdx].isInVent) {
-            const p = next[localIdx];
-            let dx = 0, dy = 0;
-            if (keysPressed.current['w'] || keysPressed.current['arrowup']) dy -= 1;
-            if (keysPressed.current['s'] || keysPressed.current['arrowdown']) dy += 1;
-            if (keysPressed.current['a'] || keysPressed.current['arrowleft']) dx -= 1;
-            if (keysPressed.current['d'] || keysPressed.current['arrowright']) dx += 1;
-            if (dx !== 0 || dy !== 0) {
-              const length = Math.sqrt(dx * dx + dy * dy);
-              const spd = activeSettings.moveSpeed * delta;
-              const moveX = (dx / length) * spd;
-              const moveY = (dy / length) * spd;
-              const nextX = p.pos.x + moveX;
-              const nextY = p.pos.y + moveY;
-              const newPos = { ...p.pos };
-              if (!p.isAlive) { newPos.x = nextX; newPos.y = nextY; }
-              else {
-                if (!checkCollision({ x: nextX, y: p.pos.y })) newPos.x = nextX;
-                if (!checkCollision({ x: p.pos.x, y: nextY })) newPos.y = nextY;
-              }
-              next[localIdx] = { ...p, pos: newPos };
+        const next = [...s.players];
+        const localIdx = next.findIndex(p => p.id === localPlayerId);
+        const isInputLocked = !!s.activeTask || s.showRoleReveal || !!s.ejectionText;
+        let hasChanged = false;
+        
+        if (localIdx !== -1 && !isInputLocked && !next[localIdx].isInVent) {
+          const p = next[localIdx];
+          let dx = 0, dy = 0;
+          if (keysPressed.current['w'] || keysPressed.current['arrowup']) dy -= 1;
+          if (keysPressed.current['s'] || keysPressed.current['arrowdown']) dy += 1;
+          if (keysPressed.current['a'] || keysPressed.current['arrowleft']) dx -= 1;
+          if (keysPressed.current['d'] || keysPressed.current['arrowright']) dx += 1;
+          if (dx !== 0 || dy !== 0) {
+            const length = Math.sqrt(dx * dx + dy * dy);
+            const spd = activeSettings.moveSpeed * delta;
+            const moveX = (dx / length) * spd;
+            const moveY = (dy / length) * spd;
+            const nextX = p.pos.x + moveX;
+            const nextY = p.pos.y + moveY;
+            const newPos = { ...p.pos };
+            if (!p.isAlive) { newPos.x = nextX; newPos.y = nextY; }
+            else {
+              if (!checkCollision({ x: nextX, y: p.pos.y })) newPos.x = nextX;
+              if (!checkCollision({ x: p.pos.x, y: nextY })) newPos.y = nextY;
             }
+            next[localIdx] = { ...p, pos: newPos };
+            hasChanged = true;
           }
-          
-          if (isLocalHost && s.gameState === GameState.PLAYING && !isInputLocked) {
-            next.forEach((p, i) => {
-              if (p.isAI && p.isAlive) {
-                if (!p.aiTarget || Math.hypot(p.pos.x - p.aiTarget.x, p.pos.y - p.aiTarget.y) < 0.5) {
+        }
+        
+        if (isLocalHost && s.gameState === GameState.PLAYING && !isInputLocked) {
+          next.forEach((p, i) => {
+            if (p.isAI && p.isAlive) {
+              // 1. TARGETING LOGIC
+              if (!p.aiTarget || Math.hypot(p.pos.x - p.aiTarget.x, p.pos.y - p.aiTarget.y) < 0.8) {
+                if (p.aiTarget && p.role === PlayerRole.CREWMATE && p.tasksCompleted < p.totalTasks) {
+                  next[i] = { ...p, tasksCompleted: p.tasksCompleted + 1, aiTarget: null };
+                  hasChanged = true;
+                  return;
+                }
+                if (p.role === PlayerRole.IMPOSTOR) {
+                  // Impostors target nearest alive crewmate
+                  const crew = next.filter(pl => pl.id !== p.id && pl.isAlive && pl.role === PlayerRole.CREWMATE);
+                  if (crew.length > 0) {
+                    const nearest = crew.sort((a, b) => Math.hypot(a.pos.x - p.pos.x, a.pos.y - p.pos.y) - Math.hypot(b.pos.x - p.pos.x, b.pos.y - p.pos.y))[0];
+                    next[i] = { ...p, aiTarget: { ...nearest.pos } };
+                    hasChanged = true;
+                  } else {
+                    const rTask = currentMapData.tasks[Math.floor(Math.random() * currentMapData.tasks.length)];
+                    next[i] = { ...p, aiTarget: { ...rTask.pos } };
+                    hasChanged = true;
+                  }
+                } else {
+                  // Crewmates target random map tasks
                   const rTask = currentMapData.tasks[Math.floor(Math.random() * currentMapData.tasks.length)];
                   next[i] = { ...p, aiTarget: { ...rTask.pos } };
-                } else {
-                  const dX = p.aiTarget.x - p.pos.x;
-                  const dY = p.aiTarget.y - p.pos.y;
-                  const length = Math.sqrt(dX * dX + dY * dY);
-                  const spd = (activeSettings.moveSpeed * 0.7) * delta;
-                  const nx = p.pos.x + (dX/length)*spd;
-                  const ny = p.pos.y + (dY/length)*spd;
-                  if (!checkCollision({x: nx, y: ny})) next[i] = { ...p, pos: {x: nx, y: ny} };
-                  else next[i] = { ...p, aiTarget: null };
+                  hasChanged = true;
                 }
               }
-            });
+
+              // 2. VENT LOGIC (Impostors only)
+              if (p.role === PlayerRole.IMPOSTOR && (!p.lastVentTime || time - p.lastVentTime > 8000)) {
+                const currentVent = currentMapData.vents.find(v => Math.hypot(v.pos.x - p.pos.x, v.pos.y - p.pos.y) < 2.0);
+                if (currentVent && p.aiTarget) {
+                  const distToTarget = Math.hypot(p.pos.x - p.aiTarget.x, p.pos.y - p.aiTarget.y);
+                  // Check linked vents
+                  for (const linkId of currentVent.links) {
+                    const linkedVent = currentMapData.vents.find(v => v.id === linkId);
+                    if (linkedVent) {
+                      const distFromLinked = Math.hypot(linkedVent.pos.x - p.aiTarget.x, linkedVent.pos.y - p.aiTarget.y);
+                      if (distFromLinked < distToTarget - 8) { // Only vent if it saves significant distance
+                        next[i] = { ...p, pos: { ...linkedVent.pos }, lastVentTime: time, isInVent: false };
+                        hasChanged = true;
+                        return; // Skip movement for this frame
+                      }
+                    }
+                  }
+                }
+              }
+
+              // 3. MOVEMENT & OBSTACLE AVOIDANCE
+              if (p.aiTarget) {
+                const dX = p.aiTarget.x - p.pos.x;
+                const dY = p.aiTarget.y - p.pos.y;
+                const angle = Math.atan2(dY, dX);
+                const spd = (activeSettings.moveSpeed * 0.75) * delta;
+                
+                // Try direct path first
+                let moveX = Math.cos(angle) * spd;
+                let moveY = Math.sin(angle) * spd;
+                
+                if (!checkCollision({ x: p.pos.x + moveX, y: p.pos.y + moveY })) {
+                  next[i] = { ...p, pos: { x: p.pos.x + moveX, y: p.pos.y + moveY }, aiStuckTimer: 0 };
+                  hasChanged = true;
+                } else {
+                  // Stuck! Try alternative angles (sliding/steering)
+                  let foundPath = false;
+                  // Try angles in increasing increments to find the closest clear path
+                  const testAngles = [0.4, -0.4, 0.8, -0.8, 1.2, -1.2, 1.57, -1.57]; 
+                  for (const aOff of testAngles) {
+                    const testAngle = angle + aOff;
+                    const tx = Math.cos(testAngle) * spd;
+                    const ty = Math.sin(testAngle) * spd;
+                    if (!checkCollision({ x: p.pos.x + tx, y: p.pos.y + ty })) {
+                      next[i] = { ...p, pos: { x: p.pos.x + tx, y: p.pos.y + ty }, aiStuckTimer: 0 };
+                      hasChanged = true;
+                      foundPath = true;
+                      break;
+                    }
+                  }
+                  
+                  if (!foundPath) {
+                    // Truly stuck, increment timer and eventually reset target
+                    const newStuckTimer = (p.aiStuckTimer || 0) + 1;
+                    next[i] = { ...p, aiStuckTimer: newStuckTimer };
+                    hasChanged = true;
+                    if (newStuckTimer > 40) {
+                      next[i] = { ...p, aiTarget: null, aiStuckTimer: 0 };
+                    }
+                  }
+                }
+              }
+            }
+          });
+
+          // Win Condition Check (Host Only)
+          const alivePlayers = next.filter(pl => pl.isAlive);
+          const impostors = alivePlayers.filter(pl => pl.role === PlayerRole.IMPOSTOR);
+          const crewmates = alivePlayers.filter(pl => pl.role === PlayerRole.CREWMATE);
+          const allCrewmates = next.filter(pl => pl.role === PlayerRole.CREWMATE);
+          const allTasksDone = allCrewmates.length > 0 && allCrewmates.every(pl => pl.tasksCompleted >= pl.totalTasks);
+
+          if (allTasksDone) {
+            broadcast({ type: 'WIN', role: PlayerRole.CREWMATE });
+            setWinner(PlayerRole.CREWMATE);
+            setGameState(GameState.GAMEOVER);
+          } else if (impostors.length === 0 && crewmates.length > 0) {
+            broadcast({ type: 'WIN', role: PlayerRole.CREWMATE });
+            setWinner(PlayerRole.CREWMATE);
+            setGameState(GameState.GAMEOVER);
+          } else if (impostors.length >= crewmates.length && crewmates.length > 0) {
+            broadcast({ type: 'WIN', role: PlayerRole.IMPOSTOR });
+            setWinner(PlayerRole.IMPOSTOR);
+            setGameState(GameState.GAMEOVER);
           }
-          
-          if (time - syncThrottleRef.current > 33 && s.currentLobby) {
-            syncChannel.postMessage({ 
-              type: 'POS_SYNC', 
-              lobbyId: s.currentLobby.id, 
-              player: localIdx !== -1 ? next[localIdx] : undefined, 
-              allPlayers: isLocalHost ? next : undefined 
-            });
-            syncThrottleRef.current = time;
-          }
-          return next;
-        });
+        }
+
+        if (hasChanged) {
+          setPlayers(next);
+        }
+        
+        if (time - syncThrottleRef.current > 33 && s.currentLobby) {
+          broadcast({ 
+            type: 'POS_SYNC', 
+            lobbyId: s.currentLobby.id, 
+            player: localIdx !== -1 ? next[localIdx] : undefined, 
+            allPlayers: isLocalHost ? next : undefined 
+          });
+          syncThrottleRef.current = time;
+        }
       }
       
       if (s.gameState === GameState.PLAYING) {
         setKillCooldown(c => Math.max(0, c - 16.666 * delta));
+        setVentCooldown(c => Math.max(0, c - 16.666 * delta));
         setSabotageCooldown(c => Math.max(0, c - 16.666 * delta));
         setSabotageTimer(t => Math.max(0, t - (16.666 * delta) / 1000));
       }
@@ -535,7 +856,7 @@ const App: React.FC = () => {
 
   // --- SYNC HANDLERS ---
   useEffect(() => {
-    const handleMessage = (e: MessageEvent) => {
+    const handleMessage = (e: any) => {
       const m = e.data;
       const s = stateRef.current;
 
@@ -549,17 +870,53 @@ const App: React.FC = () => {
         }));
       }
       if (m.type === 'JOIN_REQ' && isLocalHost && s.currentLobby?.code === m.code) {
+        // Add the joiner to our list if not already there
+        const alreadyIn = s.players.find(p => p.id === m.joinerId);
+        if (!alreadyIn && s.players.length < MAX_LOBBY_CAPACITY) {
+          const spawn = currentMapData.emergencyButtonPos;
+          const newPlayer: ExtendedPlayer = {
+            id: m.joinerId,
+            name: m.joinerName || "Unknown",
+            color: m.joinerColor || PLAYER_COLORS[s.players.length % PLAYER_COLORS.length],
+            role: PlayerRole.CREWMATE,
+            isAI: false,
+            isAlive: true,
+            pos: { x: spawn.x, y: spawn.y + 1.5 },
+            lastKnownPos: { x: spawn.x, y: spawn.y + 1.5 },
+            tasksCompleted: 0,
+            totalTasks: 4,
+            joinedAt: Date.now(),
+            lastSeen: Date.now()
+          };
+          setPlayers(prev => [...prev, newPlayer]);
+          stateRef.current.players = [...s.players, newPlayer];
+        }
+
         // Enforce max capacity check on joining
-        if (s.players.length < MAX_LOBBY_CAPACITY) {
-          syncChannel.postMessage({ 
+        if (s.players.length < MAX_LOBBY_CAPACITY || alreadyIn) {
+          const spawn = currentMapData.emergencyButtonPos;
+          broadcast({ 
             type: 'LOBBY_SYNC', 
             lobby: s.currentLobby, 
-            players: s.players, 
+            players: alreadyIn ? s.players : [...s.players, {
+              id: m.joinerId,
+              name: m.joinerName || "Unknown",
+              color: m.joinerColor || PLAYER_COLORS[s.players.length % PLAYER_COLORS.length],
+              role: PlayerRole.CREWMATE,
+              isAI: false,
+              isAlive: true,
+              pos: { x: spawn.x, y: spawn.y + 1.5 },
+              lastKnownPos: { x: spawn.x, y: spawn.y + 1.5 },
+              tasksCompleted: 0,
+              totalTasks: 4,
+              joinedAt: Date.now()
+            }], 
             tasks: s.tasks, 
+            votes: s.votes,
             gameState: s.gameState 
           });
         } else {
-          syncChannel.postMessage({ 
+          broadcast({ 
             type: 'LOBBY_FULL', 
             code: m.code,
             joinerId: m.joinerId 
@@ -580,6 +937,11 @@ const App: React.FC = () => {
         setIsJoining(false);
         setGameState(m.gameState);
 
+        // Join the room on the server
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'JOIN_ROOM', roomCode: m.lobby.code }));
+        }
+
         const usedColors = new Set(m.players.map((p: any) => p.color));
         let myColor = playerColor;
         if (usedColors.has(myColor)) {
@@ -587,26 +949,50 @@ const App: React.FC = () => {
           setPlayerColor(myColor);
         }
         
-        setPlayers(prev => {
-          // Find our existing local player if possible
-          const localMe = prev.find(p => p.id === localPlayerId);
-          const others = m.players.filter((p: Player) => p.id !== localPlayerId);
-          
-          // Rebuild current player list
-          const me = localMe ? { ...localMe, color: myColor } : { ...m.players.find((p: any) => p.id === localPlayerId), color: myColor };
-          
-          const combined = [me, ...others];
-          // Simple ID-based deduplication
-          const seen = new Set();
-          const unique = combined.filter(p => {
-            if (seen.has(p.id)) return false;
-            seen.add(p.id);
-            return true;
-          });
-          
-          return unique.sort((a,b) => a.joinedAt - b.joinedAt).map(p => ({ ...p, lastSeen: Date.now() }));
+        // Find our existing local player if possible
+        const localMe = stateRef.current.players.find(p => p.id === localPlayerId);
+        const others = m.players.filter((p: Player) => p.id !== localPlayerId);
+        
+        // Rebuild current player list
+        const meInSync = m.players.find((p: any) => p.id === localPlayerId);
+        const me = {
+          ...(meInSync || localMe || {
+            id: localPlayerId,
+            name: playerName,
+            isAI: false,
+            isAlive: true,
+            pos: { x: 0, y: 0 },
+            lastKnownPos: { x: 0, y: 0 },
+            tasksCompleted: 0,
+            totalTasks: 5,
+            joinedAt: localJoinedAt
+          }),
+          color: myColor
+        };
+        
+        const combined = [me, ...others];
+        // Simple ID-based deduplication
+        const seen = new Set();
+        const unique = combined.filter(p => {
+          if (seen.has(p.id)) return false;
+          seen.add(p.id);
+          return true;
         });
+        
+        const syncedPlayers = unique.sort((a,b) => a.joinedAt - b.joinedAt).map(p => ({ ...p, lastSeen: Date.now() }));
+        
+        // Update ref immediately
+        stateRef.current = { 
+          ...stateRef.current, 
+          players: syncedPlayers, 
+          gameState: m.gameState,
+          tasks: m.tasks,
+          currentLobby: m.lobby
+        };
+
+        setPlayers(syncedPlayers);
         setTasks(m.tasks);
+        if (m.votes) setVotes(m.votes);
       }
       
       if (!currentLobby || m.lobbyId !== currentLobby.id) return;
@@ -631,10 +1017,17 @@ const App: React.FC = () => {
           if (m.allPlayers && !isLocalHost) {
             setPlayers(prev => {
               const localMe = prev.find(lp => lp.id === localPlayerId);
-              return m.allPlayers.map((p: ExtendedPlayer) => {
-                if (p.id === localPlayerId) return localMe || { ...p, lastSeen: Date.now() };
+              const hostHasMe = m.allPlayers.some((p: any) => p.id === localPlayerId);
+              
+              const updatedPlayers = m.allPlayers.map((p: ExtendedPlayer) => {
+                if (p.id === localPlayerId) return { ...p, ...localMe, lastSeen: Date.now() };
                 return { ...p, lastSeen: Date.now() };
               });
+
+              if (!hostHasMe && localMe) {
+                return [localMe, ...updatedPlayers];
+              }
+              return updatedPlayers;
             });
           }
           break;
@@ -653,11 +1046,20 @@ const App: React.FC = () => {
           break;
         case 'MEETING_TRIGGER':
           setReporterId(m.reporterId);
+          setChatMessages([]);
+          setVotes({});
           setGameState(GameState.MEETING);
           setActiveSabotage(null);
           break;
+        case 'CHAT_MESSAGE':
+          setChatMessages(prev => [...prev, m.message]);
+          break;
+        case 'VOTE_CAST':
+          setVotes(prev => ({ ...prev, [m.voterId]: m.targetId }));
+          break;
         case 'TASK_SYNC':
           setTasks(prev => prev.map(t => t.id === m.taskId ? { ...t, completed: true } : t));
+          setPlayers(prev => prev.map(p => p.id === m.senderId ? { ...p, tasksCompleted: p.tasksCompleted + 1 } : p));
           break;
         case 'SABOTAGE_START':
           setActiveSabotage(m.sabotageType);
@@ -668,25 +1070,44 @@ const App: React.FC = () => {
           setGameState(GameState.GAMEOVER);
           break;
         case 'PLAYER_LEAVE':
-          setPlayers(prev => prev.filter(p => p.id !== m.playerId));
+          if (m.playerId !== localPlayerId) {
+            setPlayers(prev => prev.filter(p => p.id !== m.playerId));
+          }
           break;
       }
     };
-    syncChannel.addEventListener('message', handleMessage);
-    return () => syncChannel.removeEventListener('message', handleMessage);
-  }, [currentLobby, isLocalHost, localPlayerId, playerColor, broadcastLobby]);
+    handleMessageRef.current = handleMessage;
+    if (syncChannel) syncChannel.addEventListener('message', handleMessage);
+    return () => {
+      if (syncChannel) syncChannel.removeEventListener('message', handleMessage);
+    };
+  }, [currentLobby, isLocalHost, localPlayerId, playerColor, broadcastLobby, broadcast]);
 
   // Keybindings
   useEffect(() => {
     const down = (e: KeyboardEvent) => { 
-      keysPressed.current[e.key.toLowerCase()] = true; 
-      if (e.key.toLowerCase() === 'm' && stateRef.current.gameState === GameState.PLAYING) setShowMap(v => !v);
-      if (e.key.toLowerCase() === 'tab' && local?.role === PlayerRole.IMPOSTOR) { e.preventDefault(); setShowSabotageMenu(v => !v); }
-      if (e.key.toLowerCase() === 'q') handleKill();
-      if (e.key.toLowerCase() === 'r') { if (nearbyBody) report(); }
-      if (e.key.toLowerCase() === 'e') useAction();
+      if (document.activeElement?.tagName === 'INPUT') {
+        if (e.key === 'Escape') (document.activeElement as HTMLElement).blur();
+        return;
+      }
+      if (e.key && typeof e.key === 'string') {
+        keysPressed.current[e.key.toLowerCase()] = true; 
+        if (e.key.toLowerCase() === 'm' && stateRef.current.gameState === GameState.PLAYING) setShowMap(v => !v);
+        if (e.key.toLowerCase() === 'tab' && local?.role === PlayerRole.IMPOSTOR) { e.preventDefault(); setShowSabotageMenu(v => !v); }
+        if (e.key.toLowerCase() === 'q') handleKill();
+        if (e.key.toLowerCase() === 'r') { if (nearbyBody) report(); }
+        if (e.key.toLowerCase() === 'e') useAction();
+        if ((e.key === 'Enter' || e.key.toLowerCase() === 't') && stateRef.current.gameState === GameState.LOBBY_WAITING) {
+          e.preventDefault();
+          setShowChat(true);
+        }
+      }
     };
-    const up = (e: KeyboardEvent) => keysPressed.current[e.key.toLowerCase()] = false;
+    const up = (e: KeyboardEvent) => {
+      if (e.key && typeof e.key === 'string') {
+        keysPressed.current[e.key.toLowerCase()] = false;
+      }
+    };
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
@@ -696,9 +1117,22 @@ const App: React.FC = () => {
     const lobbiesList: DiscoveredLobby[] = Object.values(discoveredLobbies);
     return (
       <div className="h-screen bg-black flex flex-col items-center justify-center p-6 text-white font-black overflow-hidden relative">
-        <div className="absolute inset-0 opacity-40"><Canvas camera={{ position: [0, 0, 1] }}><Stars radius={100} count={5000} factor={4} /></Canvas></div>
+        <div className="absolute inset-0 opacity-40">
+          <Canvas camera={{ position: [0, 0, 1] }}>
+            <React.Suspense fallback={null}>
+              <Stars radius={100} count={5000} factor={4} />
+            </React.Suspense>
+          </Canvas>
+        </div>
         <h1 className="text-[10rem] italic animate-pulse uppercase z-10 tracking-tighter shadow-red-600/50">AMONG US</h1>
         
+        <div className="absolute top-6 right-6 z-20 flex items-center gap-2 bg-black/40 backdrop-blur-md px-4 py-2 rounded-full border border-white/10">
+          <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'}`} />
+          <span className="text-[10px] uppercase font-black tracking-widest text-white/70">
+            {wsConnected ? 'Server Connected' : 'Local Mode (No Server)'}
+          </span>
+        </div>
+
         <div className="flex gap-8 z-10">
           <div className="bg-gray-900/90 p-10 rounded-[4rem] border-8 border-white/10 flex flex-col gap-6 w-[38rem] backdrop-blur-xl shadow-2xl overflow-y-auto custom-scrollbar">
             <h2 className="text-4xl text-center italic uppercase mb-2">Create / Join</h2>
@@ -715,9 +1149,15 @@ const App: React.FC = () => {
               const code = Math.random().toString(36).substring(2, 8).toUpperCase();
               const spawn = MAPS_DATA[selectedMap].emergencyButtonPos;
               const initialPos = { x: spawn.x, y: spawn.y + 1.5 }; 
-              setCurrentLobby({ id: `c-${Date.now()}`, name: `${playerName}'S LOBBY`, code, playerCount: 1, maxPlayers: MAX_LOBBY_CAPACITY, hostName: playerName, isPrivate: true, map: selectedMap, settings: { ...DEFAULT_SETTINGS } });
-              setPlayers([{ id: localPlayerId, name: playerName, color: playerColor, role: PlayerRole.CREWMATE, isAI: false, isAlive: true, pos: initialPos, lastKnownPos: {x:0,y:0}, tasksCompleted: 0, totalTasks: 4, joinedAt: localJoinedAt, lastSeen: Date.now() }]);
+              const savedSettings = getSavedSettings();
+              setCurrentLobby({ id: `c-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`, name: `${playerName}'S LOBBY`, code, playerCount: 1, maxPlayers: MAX_LOBBY_CAPACITY, hostName: playerName, isPrivate: true, map: selectedMap, settings: { ...savedSettings } });
+              setPlayers([{ id: localPlayerId, name: playerName, color: playerColor, role: PlayerRole.CREWMATE, isAI: false, isAlive: true, pos: initialPos, lastKnownPos: {x:0,y:0}, tasksCompleted: 0, totalTasks: 5, joinedAt: localJoinedAt, lastSeen: Date.now() }]);
               setGameState(GameState.LOBBY_WAITING);
+              
+              // Join the room on the server
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'JOIN_ROOM', roomCode: code }));
+              }
             }} className="bg-red-600 hover:bg-red-500 p-6 rounded-3xl text-3xl uppercase italic shadow-lg active:scale-95 transition-all">Create Lobby</button>
             <div className="flex gap-4">
               <input type="text" placeholder="CODE" value={joinCodeInput} onChange={e => setJoinCodeInput(e.target.value.toUpperCase())} className="flex-1 bg-gray-950 p-6 rounded-3xl text-center text-3xl uppercase border-4 border-transparent focus:border-green-500 outline-none" maxLength={6} />
@@ -781,32 +1221,84 @@ const App: React.FC = () => {
       {/* HUD & TASK LIST */}
       <div className="absolute top-6 left-6 right-6 flex justify-between pointer-events-none z-[60]">
         <div className="flex flex-col gap-4">
-          <div className="w-96 bg-black/60 p-4 rounded-2xl border-4 border-white/20">
+          <motion.div 
+            initial={{ x: -20, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            className="w-96 bg-black/60 backdrop-blur-md p-4 rounded-2xl border-4 border-white/20 shadow-2xl"
+          >
             <div className="flex justify-between text-[10px] font-black uppercase text-gray-400 mb-1">
-              <span>Tasks Progress</span>
-              <span>{Math.round(taskProgress)}%</span>
+              <span className="flex items-center gap-2">
+                <CheckCircle2 size={12} className="text-green-500" />
+                Total Tasks Progress
+              </span>
+              <span className="text-green-400">{Math.round(taskProgress)}%</span>
             </div>
-            <div className="h-6 bg-gray-800 rounded-lg overflow-hidden border-2 border-gray-700">
-              <div className="h-full bg-green-500 transition-all duration-1000" style={{ width: `${taskProgress}%` }} />
+            <div className="h-6 bg-gray-800 rounded-lg overflow-hidden border-2 border-gray-700 relative">
+              <motion.div 
+                className="h-full bg-gradient-to-r from-green-600 to-green-400"
+                initial={{ width: 0 }}
+                animate={{ width: `${taskProgress}%` }}
+                transition={{ type: 'spring', stiffness: 50 }}
+              />
+              <div className="absolute inset-0 bg-white/5 pointer-events-none" />
             </div>
-          </div>
+          </motion.div>
+
+          <AnimatePresence>
+            {lastCompletedTask && (
+              <motion.div
+                initial={{ x: -50, opacity: 0, scale: 0.8 }}
+                animate={{ x: 0, opacity: 1, scale: 1 }}
+                exit={{ x: -50, opacity: 0, scale: 0.8 }}
+                className="bg-green-600/90 text-white px-4 py-2 rounded-xl border-2 border-green-400 flex items-center gap-3 shadow-lg"
+              >
+                <CheckCircle2 size={16} />
+                <span className="text-xs font-black uppercase italic tracking-widest">Task Completed: {lastCompletedTask}</span>
+              </motion.div>
+            )}
+            {activeSabotage && (
+              <motion.div
+                initial={{ x: -50, opacity: 0, scale: 0.8 }}
+                animate={{ x: 0, opacity: 1, scale: 1 }}
+                exit={{ x: -50, opacity: 0, scale: 0.8 }}
+                className="bg-red-600/90 text-white px-4 py-2 rounded-xl border-2 border-red-400 flex items-center gap-3 shadow-lg animate-pulse"
+              >
+                <AlertTriangle size={16} />
+                <span className="text-xs font-black uppercase italic tracking-widest">SABOTAGE: {activeSabotage}</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {local && (
-            <div className={`w-72 p-4 rounded-2xl border-4 backdrop-blur-md ${local.role === PlayerRole.CREWMATE ? 'bg-black/40 border-white/10' : 'bg-red-950/40 border-red-500/20'}`}>
-               <h3 className={`${local.role === PlayerRole.CREWMATE ? 'text-yellow-500' : 'text-red-500'} font-black uppercase text-xs tracking-widest mb-2 border-b border-current/30 pb-1`}>
-                 {local.role === PlayerRole.CREWMATE ? 'Assigned Tasks' : 'Fake Objectives'}
+            <motion.div 
+              initial={{ x: -20, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ delay: 0.2 }}
+              className={`w-72 p-4 rounded-2xl border-4 backdrop-blur-md shadow-2xl ${local.role === PlayerRole.CREWMATE ? 'bg-black/40 border-white/10' : 'bg-red-950/40 border-red-500/20'}`}
+            >
+               <h3 className={`${local.role === PlayerRole.CREWMATE ? 'text-yellow-500' : 'text-red-500'} font-black uppercase text-xs tracking-widest mb-2 border-b border-current/30 pb-1 flex items-center justify-between`}>
+                 <span>{local.role === PlayerRole.CREWMATE ? 'Assigned Tasks' : 'Fake Objectives'}</span>
+                 <span className="text-[8px] opacity-50">{tasks.filter(t => t.completed).length}/{tasks.length}</span>
                </h3>
-               {tasks.map(t => {
-                 const isCompleted = local.role === PlayerRole.CREWMATE ? t.completed : false;
-                 return (
-                   <div key={t.id} className={`flex items-center gap-3 ${isCompleted ? 'opacity-30' : ''}`}>
-                      <div className={`w-3 h-3 rounded-full ${isCompleted ? 'bg-green-500' : (local.role === PlayerRole.IMPOSTOR ? 'bg-red-500' : 'bg-gray-500 animate-pulse')}`} />
-                      <span className={`text-white text-xs font-bold uppercase ${isCompleted ? 'line-through decoration-white/50' : ''}`}>
-                        {local.role === PlayerRole.IMPOSTOR ? '(Fake) ' : ''}{t.name} in {t.room}
-                      </span>
-                   </div>
-                 );
-               })}
-            </div>
+               <div className="flex flex-col gap-2">
+                {tasks.map(t => {
+                  const isCompleted = local.role === PlayerRole.CREWMATE ? t.completed : false;
+                  return (
+                    <motion.div 
+                      key={t.id} 
+                      layout
+                      className={`flex items-center gap-3 transition-opacity ${isCompleted ? 'opacity-30' : ''}`}
+                    >
+                       <div className={`w-3 h-3 rounded-full border border-white/20 ${isCompleted ? 'bg-green-500' : (local.role === PlayerRole.IMPOSTOR ? 'bg-red-500' : 'bg-gray-500 animate-pulse')}`} />
+                       <span className={`text-white text-[11px] font-bold uppercase tracking-tight ${isCompleted ? 'line-through decoration-white/50' : ''}`}>
+                         {local.role === PlayerRole.IMPOSTOR ? '(Fake) ' : ''}{t.name}
+                         <span className="block text-[8px] text-gray-500 font-black">{t.room}</span>
+                       </span>
+                    </motion.div>
+                  );
+                })}
+               </div>
+            </motion.div>
           )}
         </div>
 
@@ -829,9 +1321,29 @@ const App: React.FC = () => {
       <div className="absolute bottom-10 right-10 flex flex-col gap-6 z-[60] items-end">
         <div className="flex gap-6 items-end">
           {local?.role === PlayerRole.IMPOSTOR && (
-            <button onClick={handleKill} disabled={killCooldown > 0 || !local.isAlive} className={`w-32 h-32 rounded-full border-8 text-white font-black flex flex-col items-center justify-center transition-all ${killCooldown > 0 || !local.isAlive ? 'bg-gray-800 border-gray-600 grayscale' : 'bg-red-700 border-red-500 shadow-xl pointer-events-auto active:scale-95'}`}>
-              <span className="text-xl">KILL</span>
-              {killCooldown > 0 && <span className="text-2xl">{Math.ceil(killCooldown/1000)}</span>}
+            <button onClick={handleKill} disabled={!!(killCooldown > 0 || !local?.isAlive || local?.isInVent)} className={`relative w-32 h-32 rounded-full border-8 text-white font-black flex flex-col items-center justify-center transition-all ${killCooldown > 0 || !local?.isAlive || local?.isInVent ? 'bg-gray-800 border-gray-600 grayscale' : 'bg-red-700 border-red-500 shadow-xl pointer-events-auto active:scale-95'}`}>
+              {killCooldown > 0 && (
+                <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
+                  <circle
+                    cx="50%" cy="50%" r="48%"
+                    fill="none"
+                    stroke="rgba(255,255,255,0.2)"
+                    strokeWidth="8"
+                  />
+                  <motion.circle
+                    cx="50%" cy="50%" r="48%"
+                    fill="none"
+                    stroke="white"
+                    strokeWidth="8"
+                    strokeDasharray="100 100"
+                    animate={{ strokeDashoffset: 100 - (killCooldown / (activeSettings.killCooldown * 1000)) * 100 }}
+                    transition={{ duration: 0.1, ease: "linear" }}
+                    pathLength="100"
+                  />
+                </svg>
+              )}
+              <span className="text-xl z-10">KILL</span>
+              {killCooldown > 0 && <span className="text-2xl z-10">{Math.ceil(killCooldown/1000)}</span>}
             </button>
           )}
           {local?.role === PlayerRole.IMPOSTOR && (
@@ -845,14 +1357,35 @@ const App: React.FC = () => {
               <span className="text-xl">REPORT</span>
             </button>
           )}
-          <button 
-            onClick={useAction} 
-            disabled={(!nearbyTask && !nearbyVent && !isNearMeetingButton) || !local?.isAlive}
-            className={`w-40 h-40 rounded-full border-8 text-white font-black flex flex-col items-center justify-center transition-all shadow-xl pointer-events-auto active:scale-95 ${(!nearbyTask && !nearbyVent && !isNearMeetingButton) || !local?.isAlive ? 'bg-gray-800 border-gray-600 grayscale' : (nearbyVent ? 'bg-red-800 border-red-500' : 'bg-blue-600 border-blue-400')}`}
-          >
-            <span className="text-2xl">{nearbyVent ? 'VENT' : (isNearMeetingButton ? 'MEETING' : 'USE')}</span>
-            <span className="text-[10px] opacity-50 font-black mt-1">[E]</span>
-          </button>
+            <button 
+              onClick={useAction} 
+              disabled={!!((!nearbyTask && !nearbyVent && !isNearMeetingButton) || !local?.isAlive || (nearbyVent && !local?.isInVent && ventCooldown > 0))}
+              className={`relative w-40 h-40 rounded-full border-8 text-white font-black flex flex-col items-center justify-center transition-all shadow-xl pointer-events-auto active:scale-95 ${(!nearbyTask && !nearbyVent && !isNearMeetingButton) || !local?.isAlive || (nearbyVent && !local?.isInVent && ventCooldown > 0) ? 'bg-gray-800 border-gray-600 grayscale' : (nearbyVent ? 'bg-red-800 border-red-500' : 'bg-blue-600 border-blue-400')}`}
+            >
+              {nearbyVent && ventCooldown > 0 && !local?.isInVent && (
+                <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
+                  <circle
+                    cx="50%" cy="50%" r="48%"
+                    fill="none"
+                    stroke="rgba(255,255,255,0.2)"
+                    strokeWidth="8"
+                  />
+                  <motion.circle
+                    cx="50%" cy="50%" r="48%"
+                    fill="none"
+                    stroke="white"
+                    strokeWidth="8"
+                    strokeDasharray="100 100"
+                    animate={{ strokeDashoffset: 100 - (ventCooldown / (activeSettings.ventCooldown * 1000)) * 100 }}
+                    transition={{ duration: 0.1, ease: "linear" }}
+                    pathLength="100"
+                  />
+                </svg>
+              )}
+              <span className="text-2xl z-10">{nearbyVent ? 'VENT' : (isNearMeetingButton ? 'MEETING' : 'USE')}</span>
+              {nearbyVent && ventCooldown > 0 && !local?.isInVent && <span className="text-xl z-10">{Math.ceil(ventCooldown/1000)}</span>}
+              <span className="text-[10px] opacity-50 font-black mt-1 z-10">[E]</span>
+            </button>
         </div>
         <button onClick={() => setShowMap(true)} className="w-24 h-24 bg-gray-800 border-4 border-gray-600 rounded-2xl text-white font-black flex flex-col items-center justify-center shadow-xl pointer-events-auto active:scale-95">
           <span className="text-xs uppercase">Map [M]</span>
@@ -907,6 +1440,18 @@ const App: React.FC = () => {
                   </div>
                   <div className="flex flex-col gap-2">
                     <div className="flex justify-between items-center">
+                      <span className="text-[10px] text-gray-400 font-black uppercase">Vent Cooldown: {activeSettings.ventCooldown}s</span>
+                    </div>
+                    <input 
+                      type="range" min="0" max="60" step="5" 
+                      value={activeSettings.ventCooldown} 
+                      onChange={(e) => handleSettingsChange({ ventCooldown: parseInt(e.target.value) })}
+                      disabled={!isLocalHost}
+                      className="w-full h-2 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-blue-500 disabled:opacity-50"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
                       <span className="text-[10px] text-gray-400 font-black uppercase">Move Speed: {activeSettings.moveSpeed.toFixed(2)}</span>
                     </div>
                     <input 
@@ -946,7 +1491,27 @@ const App: React.FC = () => {
                        ))}
                     </div>
                   </div>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] text-gray-400 font-black uppercase">Meeting Time: {activeSettings.meetingTime}s</span>
+                    </div>
+                    <input 
+                      type="range" min="15" max="120" step="5" 
+                      value={activeSettings.meetingTime} 
+                      onChange={(e) => handleSettingsChange({ meetingTime: parseInt(e.target.value) })}
+                      disabled={!isLocalHost}
+                      className="w-full h-2 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-blue-500 disabled:opacity-50"
+                    />
+                  </div>
                   {!isLocalHost && <p className="text-[8px] text-center text-red-500 uppercase font-black">Only host can change settings</p>}
+                  {isLocalHost && (
+                    <button 
+                      onClick={() => handleSettingsChange(DEFAULT_SETTINGS)}
+                      className="mt-2 text-[8px] text-gray-500 hover:text-white uppercase font-black transition-colors self-center"
+                    >
+                      Reset to Defaults
+                    </button>
+                  )}
                 </div>
               )}
            </div>
@@ -1034,22 +1599,44 @@ const App: React.FC = () => {
 
       {/* OVERLAYS */}
       {gameState === GameState.MEETING && reporterId && (
-        <MemoizedMeetingRoom players={players} localPlayerId={localPlayerId} reporterId={reporterId} deadBodies={deadBodies} onVote={(id) => {
-            setDeadBodies([]); setGameState(GameState.PLAYING);
-            if (id) {
-              const victim = players.find(p => p.id === id);
-              setEjectionText(victim ? `${victim.name} was ${victim.role === PlayerRole.IMPOSTOR ? 'the Impostor' : 'not the Impostor'}.` : 'No one was ejected.');
-              setPlayers(prev => prev.map(p => p.id === id ? { ...p, isAlive: false } : p));
-              setTimeout(() => setEjectionText(null), 5000);
-            }
-          }} 
+        <MemoizedMeetingRoom 
+          players={players} 
+          localPlayerId={localPlayerId} 
+          reporterId={reporterId} 
+          deadBodies={deadBodies} 
+          externalMessages={chatMessages}
+          externalVotes={votes}
+          onSendMessage={sendChatMessage}
+          onCastVote={castVote}
+          onVote={handleMeetingVote} 
+          isHost={isLocalHost}
+          meetingTime={activeSettings.meetingTime}
         />
       )}
       {activeTask && <MemoizedTaskUI task={activeTask} onClose={handleTaskClose} onComplete={handleTaskComplete} />}
       {showMap && <MemoizedMapOverlay players={players} localPlayerId={localPlayerId} tasks={tasks} onClose={() => setShowMap(false)} mapData={currentMapData} activeSabotage={activeSabotage} />}
+      
+      {gameState === GameState.LOBBY_WAITING && (
+        <ChatOverlay 
+          messages={chatMessages} 
+          players={players} 
+          localPlayerId={localPlayerId} 
+          onSendMessage={sendChatMessage} 
+          isOpen={showChat} 
+          onToggle={setShowChat} 
+        />
+      )}
+
       {showRoleReveal && local && (
         <div className="fixed inset-0 z-[200] bg-black flex flex-col items-center justify-center animate-in fade-in duration-500">
-           <div className="relative w-96 h-96 mb-10"><Canvas camera={{position:[0,1,3]}}><ambientLight intensity={1.5} /><PlayerModel color={local.color} isAlive={true} /></Canvas></div>
+           <div className="relative w-96 h-96 mb-10">
+             <Canvas camera={{position:[0,1,3]}}>
+               <React.Suspense fallback={null}>
+                 <ambientLight intensity={1.5} />
+                 <PlayerModel color={local.color} isAlive={true} />
+               </React.Suspense>
+             </Canvas>
+           </div>
            <h2 className={`text-[10rem] font-black italic uppercase animate-bounce ${local.role === PlayerRole.IMPOSTOR ? 'text-red-600' : 'text-blue-500'}`}>{local.role}</h2>
         </div>
       )}
@@ -1060,6 +1647,14 @@ const App: React.FC = () => {
         </div>
       )}
     </div>
+  );
+};
+
+const App: React.FC = () => {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   );
 };
 

@@ -4,13 +4,7 @@ import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
 
 // Define local constants for Three.js elements to avoid JSX namespace issues and global pollution.
-const Group = 'group' as any;
-const Mesh = 'mesh' as any;
-const SphereGeometry = 'sphereGeometry' as any;
-const MeshStandardMaterial = 'meshStandardMaterial' as any;
-const CylinderGeometry = 'cylinderGeometry' as any;
-const CapsuleGeometry = 'capsuleGeometry' as any;
-const BoxGeometry = 'boxGeometry' as any;
+// No intrinsic element hacks needed for Fiber
 
 interface PlayerModelProps {
   color: string;
@@ -55,40 +49,40 @@ const PlayerModel: React.FC<PlayerModelProps> = ({ color, isAlive, isLocal, isGh
 
   if (!isAlive && !isGhost) {
     return (
-      <Group scale={isDying ? [1.2, 0.8, 1.2] : [1, 1, 1]}>
+      <group scale={isDying ? [1.2, 0.8, 1.2] : [1, 1, 1]}>
         {/* Dead Body Bottom Half (Pant legs/base) */}
-        <Mesh position={[0, 0.25, 0]}>
-          <CylinderGeometry args={[0.4, 0.45, 0.5, 16]} />
-          <MeshStandardMaterial color={color} />
-        </Mesh>
+        <mesh position={[0, 0.25, 0]}>
+          <cylinderGeometry args={[0.4, 0.45, 0.5, 16]} />
+          <meshStandardMaterial color={color} />
+        </mesh>
         
         {/* The Cut Surface (White/Light flesh area) */}
-        <Mesh position={[0, 0.5, 0]}>
-          <CylinderGeometry args={[0.4, 0.4, 0.05, 16]} />
-          <MeshStandardMaterial color="#fecaca" />
-        </Mesh>
+        <mesh position={[0, 0.5, 0]}>
+          <cylinderGeometry args={[0.4, 0.4, 0.05, 16]} />
+          <meshStandardMaterial color="#fecaca" />
+        </mesh>
         
         {/* The Iconic Bone */}
-        <Mesh position={[0, 0.7, 0]}>
-          <CylinderGeometry args={[0.08, 0.08, 0.4, 8]} />
-          <MeshStandardMaterial color="#ffffff" />
-        </Mesh>
+        <mesh position={[0, 0.7, 0]}>
+          <cylinderGeometry args={[0.08, 0.08, 0.4, 8]} />
+          <meshStandardMaterial color="#ffffff" />
+        </mesh>
         {/* Bone Caps */}
-        <Mesh position={[-0.08, 0.9, 0]}>
-          <SphereGeometry args={[0.08, 8, 8]} />
-          <MeshStandardMaterial color="#ffffff" />
-        </Mesh>
-        <Mesh position={[0.08, 0.9, 0]}>
-          <SphereGeometry args={[0.08, 8, 8]} />
-          <MeshStandardMaterial color="#ffffff" />
-        </Mesh>
+        <mesh position={[-0.08, 0.9, 0]}>
+          <sphereGeometry args={[0.08, 8, 8]} />
+          <meshStandardMaterial color="#ffffff" />
+        </mesh>
+        <mesh position={[0.08, 0.9, 0]}>
+          <sphereGeometry args={[0.08, 8, 8]} />
+          <meshStandardMaterial color="#ffffff" />
+        </mesh>
 
         {/* Backpack remnant */}
-        <Mesh position={[-0.35, 0.25, 0]}>
-          <BoxGeometry args={[0.2, 0.4, 0.4]} />
-          <MeshStandardMaterial color={color} />
-        </Mesh>
-      </Group>
+        <mesh position={[-0.35, 0.25, 0]}>
+          <boxGeometry args={[0.2, 0.4, 0.4]} />
+          <meshStandardMaterial color={color} />
+        </mesh>
+      </group>
     );
   }
 
@@ -96,11 +90,11 @@ const PlayerModel: React.FC<PlayerModelProps> = ({ color, isAlive, isLocal, isGh
   const isTrans = (isGhost || isTransparent);
 
   return (
-    <Group>
+    <group>
       {/* Body Capsule */}
-      <Mesh position={[0, 0.7, 0]} castShadow={!isGhost && !isTransparent}>
-        <CapsuleGeometry args={[0.4, 0.6, 8, 16]} />
-        <MeshStandardMaterial 
+      <mesh position={[0, 0.7, 0]} castShadow={!isGhost && !isTransparent}>
+        <capsuleGeometry args={[0.4, 0.6, 8, 16]} />
+        <meshStandardMaterial 
           ref={materialRef}
           color={color} 
           emissive={isGhost ? color : (isLocal ? color : '#000')} 
@@ -108,12 +102,12 @@ const PlayerModel: React.FC<PlayerModelProps> = ({ color, isAlive, isLocal, isGh
           opacity={baseOpacity}
           transparent={isTrans}
         />
-      </Mesh>
+      </mesh>
       
       {/* Visor (Cyan screen) */}
-      <Mesh position={[0.25, 0.9, 0]} rotation={[0, Math.PI / 2, 0]}>
-        <BoxGeometry args={[0.4, 0.35, 0.45]} />
-        <MeshStandardMaterial 
+      <mesh position={[0.25, 0.9, 0]} rotation={[0, Math.PI / 2, 0]}>
+        <boxGeometry args={[0.4, 0.35, 0.45]} />
+        <meshStandardMaterial 
           ref={visorMaterialRef}
           color="#bae6fd" 
           emissive="#bae6fd" 
@@ -121,12 +115,12 @@ const PlayerModel: React.FC<PlayerModelProps> = ({ color, isAlive, isLocal, isGh
           opacity={baseOpacity}
           transparent={isTrans}
         />
-      </Mesh>
+      </mesh>
 
       {/* Backpack (Oxygen tank) */}
-      <Mesh position={[-0.35, 0.75, 0]} castShadow={!isGhost && !isTransparent}>
-        <BoxGeometry args={[0.2, 0.5, 0.4]} />
-        <MeshStandardMaterial 
+      <mesh position={[-0.35, 0.75, 0]} castShadow={!isGhost && !isTransparent}>
+        <boxGeometry args={[0.2, 0.5, 0.4]} />
+        <meshStandardMaterial 
           ref={backpackMaterialRef}
           color={color} 
           opacity={baseOpacity}
@@ -134,22 +128,22 @@ const PlayerModel: React.FC<PlayerModelProps> = ({ color, isAlive, isLocal, isGh
           emissive={isGhost ? color : '#000'}
           emissiveIntensity={isGhost ? 0.5 : 0}
         />
-      </Mesh>
+      </mesh>
 
       {/* Feet/Base glow for local player */}
       {isLocal && (
-        <Mesh position={[0, 0.05, 0]}>
-          <CylinderGeometry args={[0.5, 0.5, 0.1, 32]} />
-          <MeshStandardMaterial 
+        <mesh position={[0, 0.05, 0]}>
+          <cylinderGeometry args={[0.5, 0.5, 0.1, 32]} />
+          <meshStandardMaterial 
             color={color} 
             transparent 
             opacity={isGhost ? 0.1 : 0.3} 
             emissive={color} 
             emissiveIntensity={isGhost ? 0.5 : 2} 
           />
-        </Mesh>
+        </mesh>
       )}
-    </Group>
+    </group>
   );
 };
 

@@ -5,6 +5,7 @@ export enum GameState {
   LOBBY_WAITING = 'LOBBY_WAITING',
   PLAYING = 'PLAYING',
   MEETING = 'MEETING',
+  EJECTION = 'EJECTION',
   GAMEOVER = 'GAMEOVER',
   LOBBY = 'LOBBY' // Keeping for backward compatibility if needed
 }
@@ -45,6 +46,8 @@ export interface LobbySettings {
   moveSpeed: number;
   visionRadius: number;
   impostorCount: number;
+  meetingTime: number;
+  ventCooldown: number;
 }
 
 export interface Lobby {
@@ -75,10 +78,12 @@ export interface DeadBody {
 }
 
 export interface Message {
+  id: string;
   senderId: string;
   senderName: string;
   content: string;
   isSus?: boolean;
+  isGhost?: boolean;
 }
 
 export interface Vent {

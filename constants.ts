@@ -344,7 +344,7 @@ export const MAPS_DATA: Record<string, MapData> = {
     walls: rawPolusWalls.map(w => ({ x: w.x * SCALE, y: w.y * SCALE, w: w.w * SCALE, h: w.h * SCALE })), 
     props: polusProps,
     rooms: polusRooms,
-    emergencyButtonPos: { x: 1380 * SCALE, y: 1000 * SCALE }, 
+    emergencyButtonPos: { x: 1380 * SCALE, y: 850 * SCALE }, 
     tasks: polusTasks,
     vents: polusVents
   }

@@ -3,7 +3,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { Player, Message, DeadBody } from "../types";
 
 // Always use process.env.API_KEY directly when initializing GoogleGenAI
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export const getMeetingDiscussion = async (
   players: Player[],
@@ -60,13 +60,14 @@ export const getMeetingDiscussion = async (
 
     // Directly access the .text property from GenerateContentResponse
     const text = response.text || '[]';
-    return JSON.parse(text);
+    const parsed: Message[] = JSON.parse(text);
+    return parsed.map((m, i) => ({ ...m, id: `msg-ai-${Date.now()}-${i}` }));
   } catch (error) {
     console.error("Gemini Error:", error);
     return [
-      { senderId: reporterId, senderName: reporter?.name || 'Player', content: "Body found in Medbay!" },
-      { senderId: 'ai-1', senderName: 'Blue', content: "Where was everyone?" },
-      { senderId: 'ai-2', senderName: 'Green', content: "I was in Electrical." }
+      { id: 'err-1', senderId: reporterId, senderName: reporter?.name || 'Player', content: "Body found in Medbay!" },
+      { id: 'err-2', senderId: 'ai-1', senderName: 'Blue', content: "Where was everyone?" },
+      { id: 'err-3', senderId: 'ai-2', senderName: 'Green', content: "I was in Electrical." }
     ];
   }
 };
