@@ -1,5 +1,5 @@
 
-import { Vector2D, Vent } from './types';
+import { Vector2D, Vent, Door } from './types';
 
 export const SCALE = 0.05;
 export const MAP_SIZE = { width: 2800 * SCALE, height: 2200 * SCALE };
@@ -82,6 +82,7 @@ export interface MapData {
   emergencyButtonPos: Vector2D;
   tasks: any[];
   vents: Vent[];
+  doors: Door[];
 }
 
 // --- SKELD DATA ---
@@ -126,6 +127,12 @@ const skeldVents: Vent[] = [
   { id: 'sk-v4', pos: { x: 100 * SCALE, y: 1000 * SCALE }, links: ['sk-v3'] },
   { id: 'sk-v5', pos: { x: 900 * SCALE, y: 1100 * SCALE }, links: ['sk-v6'] },
   { id: 'sk-v6', pos: { x: 1200 * SCALE, y: 1100 * SCALE }, links: ['sk-v5'] },
+];
+
+const skeldDoors: Door[] = [
+  { id: 'sk-d1', pos: { x: 980 * SCALE, y: 540 * SCALE }, w: 260 * SCALE, h: 40 * SCALE, room: 'Cafeteria', isOpen: true },
+  { id: 'sk-d2', pos: { x: 500 * SCALE, y: 890 * SCALE }, w: 40 * SCALE, h: 100 * SCALE, room: 'Medbay', isOpen: true },
+  { id: 'sk-d3', pos: { x: 1260 * SCALE, y: 1040 * SCALE }, w: 40 * SCALE, h: 120 * SCALE, room: 'Electrical', isOpen: true },
 ];
 
 // --- MASTER POLUS DATA (Optimized Layout) ---
@@ -272,7 +279,7 @@ const airshipProps: MapProp[] = [
   { x: 100, y: 100, type: 'cockpit_chair', w: 100, h: 100 }, 
   { x: 1750, y: 150, type: 'safe', w: 120, h: 120 },
   { x: 950, y: 150, type: 'table', w: 100, h: 100 }, 
-  { x: 950, y: 1150, type: 'kitchen_counter', w: 150, h: 80 },
+  { x: 1150, y: 1150, type: 'kitchen_counter', w: 150, h: 80 },
   { x: 200, y: 1300, type: 'engine', w: 200, h: 150 },
   { x: 1600, y: 1300, type: 'bed', w: 120, h: 180 }, 
   { x: 1000, y: 550, type: 'console', w: 80, h: 40 }, 
@@ -322,7 +329,8 @@ export const MAPS_DATA: Record<string, MapData> = {
     rooms: skeldRooms,
     emergencyButtonPos: { x: 1000 * SCALE, y: 350 * SCALE },
     tasks: skeldTasks,
-    vents: skeldVents
+    vents: skeldVents,
+    doors: skeldDoors
   },
   'Airship': {
     walls: rawAirshipWalls.map(w => ({ x: w.x * SCALE, y: w.y * SCALE, w: w.w * SCALE, h: w.h * SCALE })),
@@ -330,7 +338,11 @@ export const MAPS_DATA: Record<string, MapData> = {
     rooms: airshipRooms,
     emergencyButtonPos: { x: 1000 * SCALE, y: 300 * SCALE }, 
     tasks: airshipTasks,
-    vents: airshipVents
+    vents: airshipVents,
+    doors: [
+      { id: 'air-d1', pos: { x: 800 * SCALE, y: 235 * SCALE }, w: 40 * SCALE, h: 90 * SCALE, room: 'Meeting Room', isOpen: true },
+      { id: 'air-d2', pos: { x: 1160 * SCALE, y: 235 * SCALE }, w: 40 * SCALE, h: 90 * SCALE, room: 'Meeting Room', isOpen: true },
+    ]
   },
   'Mira HQ': {
     walls: rawSkeldWalls.map(w => ({ x: w.x * SCALE, y: w.y * SCALE, w: w.w * SCALE, h: w.h * SCALE })), 
@@ -338,7 +350,8 @@ export const MAPS_DATA: Record<string, MapData> = {
     rooms: skeldRooms,
     emergencyButtonPos: { x: 1000 * SCALE, y: 350 * SCALE },
     tasks: skeldTasks,
-    vents: skeldVents
+    vents: skeldVents,
+    doors: []
   },
   'Polus': {
     walls: rawPolusWalls.map(w => ({ x: w.x * SCALE, y: w.y * SCALE, w: w.w * SCALE, h: w.h * SCALE })), 
@@ -346,7 +359,12 @@ export const MAPS_DATA: Record<string, MapData> = {
     rooms: polusRooms,
     emergencyButtonPos: { x: 1380 * SCALE, y: 850 * SCALE }, 
     tasks: polusTasks,
-    vents: polusVents
+    vents: polusVents,
+    doors: [
+      { id: 'pol-d1', pos: { x: 1400 * SCALE, y: 1200 * SCALE }, w: 160 * SCALE, h: 40 * SCALE, room: 'Office', isOpen: true },
+      { id: 'pol-d2', pos: { x: 560 * SCALE, y: 900 * SCALE }, w: 40 * SCALE, h: 100 * SCALE, room: 'Medbay', isOpen: true },
+      { id: 'pol-d3', pos: { x: 960 * SCALE, y: 400 * SCALE }, w: 40 * SCALE, h: 140 * SCALE, room: 'Laboratory', isOpen: true },
+    ]
   }
 };
 

@@ -14,49 +14,81 @@ async function startServer() {
 
   const rooms = new Map<string, Set<WebSocket>>();
 
-  wss.on("connection", (ws) => {
+  // Heartbeat to keep connections alive through proxies
+  const heartbeat = setInterval(() => {
+    wss.clients.forEach((ws: any) => {
+      if (ws.isAlive === false) return ws.terminate();
+      ws.isAlive = false;
+      ws.ping();
+    });
+  }, 30000);
+
+  wss.on("connection", (ws: any) => {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
+
     let currentRoom: string | null = null;
 
     ws.on("message", (data) => {
-      const message = JSON.parse(data.toString());
+      try {
+        const message = JSON.parse(data.toString());
 
-      if (message.type === "JOIN_ROOM") {
-        const roomCode = message.roomCode;
-        if (currentRoom) {
-          rooms.get(currentRoom)?.delete(ws);
+        if (message.type === "JOIN_ROOM") {
+          const roomCode = message.roomCode;
+          if (currentRoom && currentRoom !== roomCode) {
+            rooms.get(currentRoom)?.delete(ws);
+          }
+          currentRoom = roomCode;
+          if (!rooms.has(roomCode)) {
+            rooms.set(roomCode, new Set());
+          }
+          rooms.get(roomCode)!.add(ws);
+          console.log(`Client joined room: ${roomCode}. Total in room: ${rooms.get(roomCode)?.size}`);
+          return;
         }
-        currentRoom = roomCode;
-        if (!rooms.has(roomCode)) {
-          rooms.set(roomCode, new Set());
-        }
-        rooms.get(roomCode)!.add(ws);
-        return;
-      }
 
-      // Broadcast to others in the same room
-      if (currentRoom && rooms.has(currentRoom)) {
-        for (const client of rooms.get(currentRoom)!) {
-          if (client !== ws && client.readyState === WebSocket.OPEN) {
-            client.send(data.toString());
-          }
+        // Broadcast to others in the same room
+        if (currentRoom && rooms.has(currentRoom)) {
+          const clients = rooms.get(currentRoom)!;
+          clients.forEach(client => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(data.toString());
+            }
+          });
         }
-      }
-      
-      // Also handle global discovery if needed
-      if (message.type === "LOBBY_ANNOUNCE" || message.type === "LOBBY_DISCOVERY_REQ") {
-        wss.clients.forEach(client => {
-          if (client !== ws && client.readyState === WebSocket.OPEN) {
-            client.send(data.toString());
-          }
-        });
+        
+        // Handle global discovery and initial join requests
+        // JOIN_REQ needs to be global or routed by code because the joiner 
+        // might not be fully synced in the room yet from the host's perspective
+        if (message.type === "LOBBY_ANNOUNCE" || message.type === "LOBBY_DISCOVERY_REQ" || message.type === "JOIN_REQ") {
+          wss.clients.forEach(client => {
+            // For JOIN_REQ, we can be more specific if we want, but global is safer for discovery phase
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(data.toString());
+            }
+          });
+        }
+      } catch (err) {
+        console.error("Error processing WebSocket message:", err);
       }
     });
 
     ws.on("close", () => {
       if (currentRoom) {
         rooms.get(currentRoom)?.delete(ws);
+        if (rooms.get(currentRoom)?.size === 0) {
+          rooms.delete(currentRoom);
+        }
       }
     });
+
+    ws.on("error", (err) => {
+      console.error("WebSocket error:", err);
+    });
+  });
+
+  wss.on('close', () => {
+    clearInterval(heartbeat);
   });
 
   // Vite middleware for development

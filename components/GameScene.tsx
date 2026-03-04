@@ -3,7 +3,7 @@ import React, { Suspense, useEffect, useState, useMemo, useRef, useLayoutEffect 
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Stars, Text, Environment, Billboard } from '@react-three/drei';
 import * as THREE from 'three';
-import { Player, Task, DeadBody, PlayerRole, Vector2D, Vent, SabotageType } from '../types';
+import { Player, Task, DeadBody, PlayerRole, Vector2D, Vent, SabotageType, Door } from '../types';
 import { MAP_SIZE, MapData } from '../constants';
 import PlayerModel from './PlayerModel';
 
@@ -16,6 +16,7 @@ interface GameSceneProps {
   deadBodies: DeadBody[];
   onEmergencyPress?: () => void;
   mapData: MapData;
+  doors: Door[];
   visionRadius?: number;
   activeSabotage?: SabotageType | null;
 }
@@ -23,6 +24,47 @@ interface GameSceneProps {
 const INDICATOR_RANGE = 10.0;
 const COMPASS_ORBIT_RADIUS = 1.8;
 const VENT_INTERACTION_RANGE = 2.5;
+
+const DoorModel: React.FC<{ door: Door; isImpostor: boolean; localPlayerPos: Vector2D }> = ({ door, isImpostor, localPlayerPos }) => {
+  const [isHighlighted, setIsHighlighted] = useState(false);
+  const glowRef = useRef<THREE.PointLight>(null);
+
+  useFrame(() => {
+    if (!isImpostor) return;
+    const dist = Math.hypot((door.pos.x + door.w/2) - localPlayerPos.x, (door.pos.y + door.h/2) - localPlayerPos.y);
+    const highlighted = dist < 3.0;
+    if (highlighted !== isHighlighted) setIsHighlighted(highlighted);
+    if (glowRef.current && highlighted) {
+      glowRef.current.intensity = 100 + Math.sin(Date.now() * 0.005) * 30;
+    }
+  });
+
+  return (
+    <group position={[door.pos.x + door.w / 2, 1.25, door.pos.y + door.h / 2]}>
+      <mesh>
+        <boxGeometry args={[door.w, 2.5, door.h]} />
+        <meshStandardMaterial 
+          color={door.isOpen ? "#10b981" : "#ef4444"} 
+          transparent 
+          opacity={door.isOpen ? 0.15 : 0.9} 
+          roughness={0.5}
+          emissive={door.isOpen ? "#10b981" : "#ef4444"}
+          emissiveIntensity={door.isOpen ? 0.1 : 0.3}
+        />
+      </mesh>
+      {isImpostor && isHighlighted && (
+        <>
+          <pointLight ref={glowRef} intensity={100} distance={4} color="#2dd4bf" position={[0, 0, 0]} />
+          <Billboard position={[0, 1.8, 0]}>
+            <Text fontSize={0.35} color="#2dd4bf" outlineWidth={0.03} outlineColor="#000000">
+              [F] {door.isOpen ? 'CLOSE' : 'OPEN'} DOOR
+            </Text>
+          </Billboard>
+        </>
+      )}
+    </group>
+  );
+};
 
 // --- NAVIGATION COMPONENTS ---
 
@@ -414,13 +456,19 @@ const AnimatedPlayer: React.FC<{ player: Player; localPlayer: Player | undefined
   });
   const isVisible = useMemo(() => {
     const localIsAlive = localPlayer?.isAlive ?? true;
-    const localIsImpostor = localPlayer?.role === PlayerRole.IMPOSTOR;
     const playerIsAlive = player.isAlive;
+
+    // Ghosts can only be seen by other ghosts
     if (!playerIsAlive) {
-      if (localIsAlive && !localIsImpostor) return false;
+      if (localIsAlive) return false;
+      // Ghosts see all other ghosts
+      return true;
     }
+
+    // Alive players visibility
     if (localPlayer && !isLocal) {
       const dist = Math.hypot(player.pos.x - localPlayer.pos.x, player.pos.y - localPlayer.pos.y);
+      // Alive players have limited vision; ghosts see everyone
       if (localIsAlive && dist > visionRadius) return false;
     }
     return true;
@@ -445,7 +493,7 @@ const AnimatedPlayer: React.FC<{ player: Player; localPlayer: Player | undefined
   );
 };
 
-const SceneContent: React.FC<GameSceneProps> = ({ players, localPlayerId, tasks, deadBodies, onEmergencyPress, mapData, visionRadius = 15, activeSabotage }) => {
+const SceneContent: React.FC<GameSceneProps> = ({ players, localPlayerId, tasks, deadBodies, onEmergencyPress, mapData, doors, visionRadius = 15, activeSabotage }) => {
   const { camera, scene, gl } = useThree();
   const localPlayer = players.find(p => p.id === localPlayerId);
   const [btnDepressed, setBtnDepressed] = useState(false);
@@ -521,6 +569,9 @@ const SceneContent: React.FC<GameSceneProps> = ({ players, localPlayerId, tasks,
       <PropsInstanced props={mapData.props} />
       {mapData.vents.map((vent) => (
         <VentGrate key={vent.id} vent={vent} isImpostor={localPlayer?.role === PlayerRole.IMPOSTOR && !!localPlayer?.isAlive} localPlayerPos={localPlayer?.pos || { x: 0, y: 0 }} />
+      ))}
+      {doors.map((door) => (
+        <DoorModel key={door.id} door={door} isImpostor={localPlayer?.role === PlayerRole.IMPOSTOR && !!localPlayer?.isAlive} localPlayerPos={localPlayer?.pos || { x: 0, y: 0 }} />
       ))}
       <group position={[mapData.emergencyButtonPos.x, 1.0, mapData.emergencyButtonPos.y]} onClick={handleEmergencyClick}>
         <mesh position={[0, 0.05, 0]}><boxGeometry args={[1.2, 0.2, 1.2]} /><meshStandardMaterial color="#1e293b" /></mesh>

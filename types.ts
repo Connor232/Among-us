@@ -48,6 +48,8 @@ export interface LobbySettings {
   impostorCount: number;
   meetingTime: number;
   ventCooldown: number;
+  maxVentTime: number;
+  doorCooldown: number;
 }
 
 export interface Lobby {
@@ -90,4 +92,13 @@ export interface Vent {
   id: string;
   pos: Vector2D;
   links: string[]; // Connected vent IDs
+}
+
+export interface Door {
+  id: string;
+  pos: Vector2D;
+  w: number;
+  h: number;
+  room: string;
+  isOpen: boolean;
 }
