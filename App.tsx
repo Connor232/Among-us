@@ -99,12 +99,6 @@ const AppContent: React.FC = () => {
   const handleMessageRef = useRef<(e: any) => void>(() => {});
 
   useEffect(() => {
-    console.log("AppContent mounted. GameState:", gameState);
-  }, []);
-
-  const [wsConnected, setWsConnected] = useState(false);
-
-  useEffect(() => {
     console.log("Initializing WebSocket connection...");
     try {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -116,22 +110,16 @@ const AppContent: React.FC = () => {
           const m = JSON.parse(e.data);
           handleMessageRef.current({ data: m });
         } catch (err) {
-          console.error("Failed to parse WebSocket message", err);
+          console.error("Failed to parse WebSocket message:", err);
         }
       };
 
       ws.onopen = () => {
         console.log("Connected to WebSocket server");
-        setWsConnected(true);
       };
 
       ws.onerror = (err) => {
-        console.warn("WebSocket connection failed. Running in Local Mode.", err);
-        setWsConnected(false);
-      };
-
-      ws.onclose = () => {
-        setWsConnected(false);
+        console.warn("WebSocket connection failed. The game will run in local/offline mode.", err);
       };
 
       return () => {
@@ -139,8 +127,8 @@ const AppContent: React.FC = () => {
           ws.close();
         }
       };
-    } catch (e) {
-      console.error("WebSocket initialization failed", e);
+    } catch (err) {
+      console.error("WebSocket initialization failed:", err);
     }
   }, []);
 
@@ -1126,13 +1114,6 @@ const AppContent: React.FC = () => {
         </div>
         <h1 className="text-[10rem] italic animate-pulse uppercase z-10 tracking-tighter shadow-red-600/50">AMONG US</h1>
         
-        <div className="absolute top-6 right-6 z-20 flex items-center gap-2 bg-black/40 backdrop-blur-md px-4 py-2 rounded-full border border-white/10">
-          <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'}`} />
-          <span className="text-[10px] uppercase font-black tracking-widest text-white/70">
-            {wsConnected ? 'Server Connected' : 'Local Mode (No Server)'}
-          </span>
-        </div>
-
         <div className="flex gap-8 z-10">
           <div className="bg-gray-900/90 p-10 rounded-[4rem] border-8 border-white/10 flex flex-col gap-6 w-[38rem] backdrop-blur-xl shadow-2xl overflow-y-auto custom-scrollbar">
             <h2 className="text-4xl text-center italic uppercase mb-2">Create / Join</h2>

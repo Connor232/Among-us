@@ -3,7 +3,15 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { Player, Message, DeadBody } from "../types";
 
 // Always use process.env.API_KEY directly when initializing GoogleGenAI
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiInstance: GoogleGenAI | null = null;
+
+const getAI = () => {
+  if (!aiInstance) {
+    const apiKey = process.env.GEMINI_API_KEY || "";
+    aiInstance = new GoogleGenAI({ apiKey });
+  }
+  return aiInstance;
+};
 
 export const getMeetingDiscussion = async (
   players: Player[],
@@ -12,6 +20,8 @@ export const getMeetingDiscussion = async (
 ): Promise<Message[]> => {
   const alivePlayers = players.filter(p => p.isAlive);
   const reporter = players.find(p => p.id === reporterId);
+  
+  const ai = getAI();
 
   const prompt = `
     This is an "Among Us" style game meeting.

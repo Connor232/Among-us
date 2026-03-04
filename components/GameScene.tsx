@@ -562,7 +562,13 @@ const GameScene: React.FC<GameSceneProps> = (props) => {
           scene.background = new THREE.Color('#94a3b8');
         }}
       >
-        <Suspense fallback={null}>
+        <Suspense fallback={
+          <Billboard position={[0, 0, 0]}>
+            <Text fontSize={1} color="#ffffff" anchorX="center" anchorY="middle">
+              LOADING MAP...
+            </Text>
+          </Billboard>
+        }>
           <SceneContent {...props} />
           <Environment preset="city" />
         </Suspense>
