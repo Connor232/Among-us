@@ -43,20 +43,6 @@ const getSavedSettings = (): LobbySettings => {
   return DEFAULT_SETTINGS;
 };
 
-// Safe BroadcastChannel initialization
-const createSyncChannel = () => {
-  try {
-    if (typeof BroadcastChannel !== 'undefined') {
-      return new BroadcastChannel('among_us_3d_robust_v11');
-    }
-  } catch (e) {
-    console.warn('BroadcastChannel not available', e);
-  }
-  return null;
-};
-
-const syncChannel = createSyncChannel();
-
 interface ExtendedPlayer extends Player {
   joinedAt: number;
   lastSeen?: number; // Heartbeat tracking
@@ -101,66 +87,70 @@ class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasErr
 const AppContent: React.FC = () => {
   const wsRef = useRef<WebSocket | null>(null);
   const handleMessageRef = useRef<(e: any) => void>(() => {});
-  const [wsStatus, setWsStatus] = useState<'connecting' | 'open' | 'closed' | 'error'>('connecting');
 
   useEffect(() => {
     console.log("Initializing WebSocket connection...");
-    let ws: WebSocket;
-    try {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${window.location.host}`);
-      wsRef.current = ws;
+    let reconnectTimer: any;
+    
+    const connect = () => {
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}`);
+        wsRef.current = ws;
 
-      ws.onmessage = (e) => {
-        try {
-          const m = JSON.parse(e.data);
-          // Deduplicate messages from BroadcastChannel if they are also coming from WebSocket
-          // (This is a simple check, but since we are the sender, the server doesn't send it back to us)
-          handleMessageRef.current({ data: m, source: 'websocket' });
-        } catch (err) {
-          console.error("Failed to parse WebSocket message:", err);
-        }
-      };
+        ws.onmessage = (e) => {
+          try {
+            const m = JSON.parse(e.data);
+            handleMessageRef.current({ data: m });
+          } catch (err) {
+            console.error("Failed to parse WebSocket message:", err);
+          }
+        };
 
-      ws.onopen = () => {
-        console.log("Connected to WebSocket server");
-        setWsStatus('open');
-      };
+        ws.onopen = () => {
+          console.log("Connected to WebSocket server");
+          setIsWsConnected(true);
+          // If we were in a lobby, re-join the room on the server
+          const s = stateRef.current;
+          if (s.currentLobby) {
+            ws.send(JSON.stringify({ type: 'JOIN_ROOM', roomCode: s.currentLobby.code }));
+          }
+        };
 
-      ws.onerror = (err) => {
-        console.warn("WebSocket connection error:", err);
-        setWsStatus('error');
-      };
+        ws.onclose = () => {
+          console.log("WebSocket connection closed. Retrying...");
+          setIsWsConnected(false);
+          reconnectTimer = setTimeout(connect, 3000);
+        };
 
-      ws.onclose = () => {
-        console.log("WebSocket connection closed");
-        setWsStatus('closed');
-      };
+        ws.onerror = (err) => {
+          console.warn("WebSocket error:", err);
+          setIsWsConnected(false);
+        };
+      } catch (err) {
+        console.error("WebSocket initialization failed:", err);
+      }
+    };
 
-      return () => {
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-          ws.close();
-        }
-      };
-    } catch (err) {
-      console.error("WebSocket initialization failed:", err);
-      setWsStatus('error');
-    }
+    connect();
+
+    return () => {
+      clearTimeout(reconnectTimer);
+      if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+        wsRef.current.close();
+      }
+    };
   }, []);
 
   const broadcast = useCallback((msg: any) => {
-    // We send to both for local tab sync and remote server sync
-    if (syncChannel) syncChannel.postMessage(msg);
-    
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg));
-    } else {
-      console.warn("WebSocket not open, message only sent to local BroadcastChannel");
     }
   }, []);
 
-  // --- CORE STATE ---
+// --- CORE STATE ---
   const [gameState, setGameState] = useState<GameState>(GameState.MENU);
+  const [isWsConnected, setIsWsConnected] = useState(false);
   const [players, setPlayers] = useState<ExtendedPlayer[]>([]);
   const [localPlayerId] = useState<string>(() => `p-${Math.random().toString(36).substr(2, 5)}`);
   const [localJoinedAt] = useState<number>(() => Date.now());
@@ -1058,11 +1048,6 @@ const AppContent: React.FC = () => {
       const m = e.data;
       const s = stateRef.current;
 
-      // If we receive a message from BroadcastChannel that we also sent to WebSocket,
-      // we might want to ignore it if we are already handling it via WebSocket.
-      // However, BroadcastChannel is only for same-browser tabs.
-      // The server doesn't echo back our own messages.
-
       if (m.type === 'LOBBY_DISCOVERY_REQ') {
         broadcastLobby();
       }
@@ -1304,10 +1289,7 @@ const AppContent: React.FC = () => {
       }
     };
     handleMessageRef.current = handleMessage;
-    if (syncChannel) syncChannel.addEventListener('message', handleMessage);
-    return () => {
-      if (syncChannel) syncChannel.removeEventListener('message', handleMessage);
-    };
+    return () => {};
   }, [currentLobby, isLocalHost, localPlayerId, playerColor, broadcastLobby, broadcast]);
 
   // Keybindings
@@ -1362,6 +1344,13 @@ const AppContent: React.FC = () => {
         </div>
         <h1 className="text-[10rem] italic animate-pulse uppercase z-10 tracking-tighter shadow-red-600/50">AMONG US</h1>
         
+        <div className="absolute top-4 right-4 z-50 flex items-center gap-2 bg-black/50 px-3 py-1 rounded-full border border-white/10">
+          <div className={`w-2 h-2 rounded-full ${isWsConnected ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 animate-pulse'}`} />
+          <span className="text-[10px] font-bold uppercase tracking-widest text-gray-300">
+            {isWsConnected ? 'Online' : 'Connecting...'}
+          </span>
+        </div>
+
         <div className="flex gap-8 z-10">
           <div className="bg-gray-900/90 p-10 rounded-[4rem] border-8 border-white/10 flex flex-col gap-6 w-[38rem] backdrop-blur-xl shadow-2xl overflow-y-auto custom-scrollbar">
             <h2 className="text-4xl text-center italic uppercase mb-2">Create / Join</h2>
@@ -1429,11 +1418,6 @@ const AppContent: React.FC = () => {
              </div>
              <p className="text-[10px] text-gray-600 text-center uppercase tracking-widest mt-auto">Only public lobbies appear here</p>
           </div>
-        <div className="mt-8 flex items-center gap-3 z-10">
-          <div className={`w-3 h-3 rounded-full ${wsStatus === 'open' ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]' : wsStatus === 'connecting' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
-          <span className="text-[10px] text-gray-500 uppercase tracking-[0.2rem] font-black">
-            Server Status: {wsStatus.toUpperCase()}
-          </span>
         </div>
       </div>
     );
