@@ -1,5 +1,5 @@
 # Use Node.js LTS as base image
-FROM node:20-slim
+FROM node:20
 
 # Set working directory
 WORKDIR /app
@@ -7,7 +7,7 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
+# Install ALL dependencies (including devDependencies for building)
 RUN npm install
 
 # Copy the rest of the application code
@@ -20,10 +20,9 @@ RUN npm run build
 ENV NODE_ENV=production
 
 # Hugging Face Spaces uses port 7860 by default
+# But we also listen to the PORT env var provided by the platform
 ENV PORT=7860
-
-# Expose the port
 EXPOSE 7860
 
-# Start the server
-CMD ["npm", "start"]
+# Start the server using tsx (which is in dependencies)
+CMD ["npx", "tsx", "server.ts"]
