@@ -1,4 +1,4 @@
-# Use Node.js LTS
+# Use Node.js LTS as base image
 FROM node:20-slim
 
 # Set working directory
@@ -10,14 +10,19 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install
 
-# Copy the rest of the application
+# Copy the rest of the application code
 COPY . .
 
 # Build the frontend
 RUN npm run build
 
-# Expose the port (Hugging Face uses 7860 by default)
+# Set environment to production
+ENV NODE_ENV=production
+
+# Hugging Face Spaces uses port 7860 by default
 ENV PORT=7860
+
+# Expose the port
 EXPOSE 7860
 
 # Start the server
