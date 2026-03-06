@@ -12,6 +12,12 @@ async function startServer() {
   const app = express();
   const server = http.createServer(app);
   const PORT = process.env.PORT || 3000;
+  const isProd = process.env.NODE_ENV === "production";
+
+  // Health check for Render
+  app.get("/health", (req, res) => {
+    res.status(200).send("OK");
+  });
 
   // WebSocket setup for real-time multi-user
   const wss = new WebSocketServer({ server });
@@ -79,7 +85,7 @@ async function startServer() {
 
   // Vite middleware for development
   console.log(`Server starting in ${process.env.NODE_ENV || 'development'} mode`);
-  if (process.env.NODE_ENV !== "production") {
+  if (!isProd) {
     const { createServer } = await import("vite");
     const vite = await createServer({
       server: { middlewareMode: true },

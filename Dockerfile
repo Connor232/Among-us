@@ -19,11 +19,7 @@ RUN npm run build
 
 # Set environment to production
 ENV NODE_ENV=production
-ENV PORT=7860
-
-# Expose the port Hugging Face expects
-EXPOSE 7860
 
 # Start the server
 # Using the direct path to tsx is more reliable in some Docker environments
-CMD ["./node_modules/.bin/tsx", "server.ts"]
+CMD ["npm", "run", "start"]
