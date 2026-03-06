@@ -1,7 +1,4 @@
-run = "npm install && npm run dev"
+run = "npm run dev"
 
 [nix]
 channel = "stable-23_11"
-
-[hints]
-replit-web-server = true

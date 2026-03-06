@@ -5,8 +5,8 @@ This project is ready to be run on Replit!
 ## How to run on Replit
 
 1. **Upload files**: Upload all the files from this project to your Replit workspace.
-2. **Install dependencies**: Replit should automatically detect the `package.json` and install dependencies. If not, run `npm install` in the shell.
-3. **Run**: Click the "Run" button at the top. Replit will use the `.replit` configuration to start the server.
+2. **Install dependencies**: Open the Replit Shell and run `npm install`.
+3. **Run**: Click the "Run" button at the top.
 
 ## Configuration
 
