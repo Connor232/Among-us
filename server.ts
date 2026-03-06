@@ -1,8 +1,8 @@
 
 import express from "express";
+import { createServer as createViteServer } from "vite";
 import { WebSocketServer, WebSocket } from "ws";
 import http from "http";
-import path from "path";
 
 async function startServer() {
   const app = express();
@@ -13,10 +13,6 @@ async function startServer() {
   const wss = new WebSocketServer({ server });
 
   const rooms = new Map<string, Set<WebSocket>>();
-  
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", rooms: rooms.size });
-  });
 
   wss.on("connection", (ws, req) => {
     const ip = req.socket.remoteAddress;
@@ -80,7 +76,6 @@ async function startServer() {
   // Vite middleware for development
   console.log(`Server starting in ${process.env.NODE_ENV || 'development'} mode`);
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -88,9 +83,9 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static("dist"));
-    // SPA fallback
+    // SPA fallback for production
     app.get("*", (req, res) => {
-      res.sendFile(path.resolve("dist", "index.html"));
+      res.sendFile("index.html", { root: "dist" });
     });
   }
 

@@ -1,14 +1,15 @@
-# Use Node.js LTS as base image
+# Use Node.js 20
 FROM node:20
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files
+# Copy package files first to leverage Docker cache
 COPY package*.json ./
 
-# Install ALL dependencies (including devDependencies for building)
-RUN npm install
+# Install dependencies
+# We use --legacy-peer-deps to avoid common dependency conflicts
+RUN npm install --include=dev --legacy-peer-deps
 
 # Copy the rest of the application code
 COPY . .
@@ -18,11 +19,11 @@ RUN npm run build
 
 # Set environment to production
 ENV NODE_ENV=production
-
-# Hugging Face Spaces uses port 7860 by default
-# But we also listen to the PORT env var provided by the platform
 ENV PORT=7860
+
+# Expose the port Hugging Face expects
 EXPOSE 7860
 
-# Start the server using tsx (which is in dependencies)
-CMD ["npx", "tsx", "server.ts"]
+# Start the server
+# Using the direct path to tsx is more reliable in some Docker environments
+CMD ["./node_modules/.bin/tsx", "server.ts"]
