@@ -1,8 +1,12 @@
 
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import { WebSocketServer, WebSocket } from "ws";
 import http from "http";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
@@ -76,16 +80,18 @@ async function startServer() {
   // Vite middleware for development
   console.log(`Server starting in ${process.env.NODE_ENV || 'development'} mode`);
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
+    const { createServer } = await import("vite");
+    const vite = await createServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
+    const distPath = path.join(__dirname, "dist");
+    app.use(express.static(distPath));
     // SPA fallback for production
     app.get("*", (req, res) => {
-      res.sendFile("index.html", { root: "dist" });
+      res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
