@@ -1,8 +1,4 @@
-run = "npm run dev"
-entrypoint = "server.ts"
-
-[modules]
-nodeBundle = true
+run = "npm install && npm run dev"
 
 [nix]
 channel = "stable-23_11"
