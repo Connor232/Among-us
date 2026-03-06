@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: among-us-3d
-    env: node
-    buildCommand: npm install --include=dev && npm run build
-    startCommand: npm run start
-    envVars:
-      - key: NODE_ENV
-        value: production

@@ -1,0 +1,14 @@
+run = "npm run dev"
+entrypoint = "server.ts"
+
+[nix]
+channel = "stable-23_11"
+
+[deployment]
+run = ["npm", "run", "start"]
+
+[packager]
+language = "nodejs"
+
+[packager.node]
+node = "nodejs_20"
