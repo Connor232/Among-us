@@ -1,14 +1,11 @@
 run = "npm run dev"
 entrypoint = "server.ts"
 
+[modules]
+nodeBundle = true
+
 [nix]
 channel = "stable-23_11"
 
-[deployment]
-run = ["npm", "run", "start"]
-
-[packager]
-language = "nodejs"
-
-[packager.node]
-node = "nodejs_20"
+[hints]
+replit-web-server = true
