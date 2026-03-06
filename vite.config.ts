@@ -16,5 +16,13 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'esnext',
+    chunkSizeWarningLimit: 2000,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'three', '@react-three/fiber', '@react-three/drei'],
+        },
+      },
+    },
   },
 });
