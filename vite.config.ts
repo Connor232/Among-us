@@ -12,6 +12,9 @@ export default defineConfig({
   server: {
     port: 3000,
   },
+  define: {
+    'process.env.APP_URL': JSON.stringify(process.env.APP_URL || ''),
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

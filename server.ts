@@ -1,16 +1,30 @@
 
+console.log("Server script starting...");
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import { WebSocketServer, WebSocket } from "ws";
 import http from "http";
+import path from "path";
+import { fileURLToPath } from "url";
+
+console.log("Imports successful");
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 async function startServer() {
+  console.log("Initializing Express app...");
   const app = express();
+  app.set('trust proxy', 1); 
   const server = http.createServer(app);
-  const PORT = process.env.PORT || 3000;
+  const PORT = 3000; 
 
-  // WebSocket setup for real-time multi-user
+  console.log("Setting up WebSocket server...");
   const wss = new WebSocketServer({ server });
+
+  // Health check route
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
 
   const rooms = new Map<string, Set<WebSocket>>();
 
@@ -76,18 +90,33 @@ async function startServer() {
   // Vite middleware for development
   console.log(`Server starting in ${process.env.NODE_ENV || 'development'} mode`);
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { 
+        middlewareMode: true,
+        hmr: false // Disable HMR as per platform guidelines
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
+    const distPath = path.resolve(__dirname, "dist");
+    app.use(express.static(distPath));
+    app.get("*all", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
   }
 
+  server.on('error', (err) => {
+    console.error("Server error:", err);
+  });
+
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT} (0.0.0.0)`);
   });
 }
 
-startServer();
+startServer().catch(err => {
+  console.error("Fatal error during server startup:", err);
+  process.exit(1);
+});

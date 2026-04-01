@@ -4,7 +4,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Stars, Text, Environment, Billboard } from '@react-three/drei';
 import * as THREE from 'three';
 import { Player, Task, DeadBody, PlayerRole, Vector2D, Vent, SabotageType, Door } from '../types';
-import { MAP_SIZE, MapData } from '../constants';
+import { MAP_SIZE, MapData, SABOTAGE_FIX_POSITIONS } from '../constants';
 import PlayerModel from './PlayerModel';
 
 // No intrinsic element hacks needed for Fiber
@@ -19,11 +19,53 @@ interface GameSceneProps {
   doors: Door[];
   visionRadius?: number;
   activeSabotage?: SabotageType | null;
+  mapName?: string;
 }
 
 const INDICATOR_RANGE = 10.0;
 const COMPASS_ORBIT_RADIUS = 1.8;
 const VENT_INTERACTION_RANGE = 2.5;
+
+const SabotageCompass: React.FC<{ activeSabotage: SabotageType; localPlayer: Player; mapName: string }> = ({ activeSabotage, localPlayer, mapName }) => {
+  const arrowRef = useRef<THREE.Mesh>(null);
+  const fixPos = useMemo(() => SABOTAGE_FIX_POSITIONS[mapName]?.[activeSabotage], [mapName, activeSabotage]);
+
+  useFrame((state) => {
+    if (!arrowRef.current || !fixPos) return;
+    const time = state.clock.getElapsedTime();
+    const dx = fixPos.x - localPlayer.pos.x;
+    const dz = fixPos.y - localPlayer.pos.y;
+    const dist = Math.hypot(dx, dz);
+    const angle = Math.atan2(dx, dz);
+    
+    arrowRef.current.position.set(localPlayer.pos.x + Math.sin(angle) * COMPASS_ORBIT_RADIUS, 0.5, localPlayer.pos.y + Math.cos(angle) * COMPASS_ORBIT_RADIUS);
+    arrowRef.current.rotation.y = angle;
+    
+    const pulse = 1 + Math.sin(time * 8) * 0.2;
+    arrowRef.current.scale.set(pulse, pulse, pulse);
+    
+    const opacity = dist > 2 ? 1 : 0;
+    if (arrowRef.current.material instanceof THREE.MeshStandardMaterial) {
+      arrowRef.current.material.opacity = opacity;
+    }
+    arrowRef.current.visible = opacity > 0;
+  });
+
+  if (!fixPos) return null;
+
+  return (
+    <mesh ref={arrowRef}>
+      <cylinderGeometry args={[0, 0.2, 0.6, 3]} />
+      <meshStandardMaterial 
+        color="#ef4444" 
+        emissive="#ef4444" 
+        emissiveIntensity={5} 
+        transparent 
+        depthTest={false} 
+      />
+    </mesh>
+  );
+};
 
 const DoorModel: React.FC<{ door: Door; isImpostor: boolean; localPlayerPos: Vector2D }> = ({ door, isImpostor, localPlayerPos }) => {
   const [isHighlighted, setIsHighlighted] = useState(false);
@@ -493,7 +535,7 @@ const AnimatedPlayer: React.FC<{ player: Player; localPlayer: Player | undefined
   );
 };
 
-const SceneContent: React.FC<GameSceneProps> = ({ players, localPlayerId, tasks, deadBodies, onEmergencyPress, mapData, doors, visionRadius = 15, activeSabotage }) => {
+const SceneContent: React.FC<GameSceneProps> = ({ players, localPlayerId, tasks, deadBodies, onEmergencyPress, mapData, doors, visionRadius = 15, activeSabotage, mapName }) => {
   const { camera, scene, gl } = useThree();
   const localPlayer = players.find(p => p.id === localPlayerId);
   const [btnDepressed, setBtnDepressed] = useState(false);
@@ -581,6 +623,9 @@ const SceneContent: React.FC<GameSceneProps> = ({ players, localPlayerId, tasks,
           <Billboard position={[0, 1.8, 0]}><Text fontSize={0.4} color="#f8fafc" anchorX="center" anchorY="middle" outlineWidth={0.03} outlineColor="#000000">[E] EMERGENCY</Text></Billboard>
         )}
       </group>
+      {activeSabotage && localPlayer && (
+        <SabotageCompass activeSabotage={activeSabotage} localPlayer={localPlayer} mapName={mapName || 'The Skeld'} />
+      )}
       {localPlayer && localPlayer.isAlive && tasks.map((task) => {
         // Crewmates don't see completed tasks; Impostors always see their fake tasks
         if (localPlayer.role === PlayerRole.CREWMATE && task.completed) return null;

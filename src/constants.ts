@@ -368,6 +368,27 @@ export const MAPS_DATA: Record<string, MapData> = {
   }
 };
 
+export const SABOTAGE_FIX_POSITIONS: Record<string, Record<string, Vector2D>> = {
+  'The Skeld': {
+    'LIGHTS': { x: 950 * SCALE, y: 1100 * SCALE },
+    'COMMS': { x: 1350 * SCALE, y: 700 * SCALE }, // Using Admin as Comms for Skeld
+    'O2': { x: 1100 * SCALE, y: 100 * SCALE },
+    'REACTOR': { x: 250 * SCALE, y: 1400 * SCALE }
+  },
+  'Polus': {
+    'LIGHTS': { x: 190 * SCALE, y: 1400 * SCALE },
+    'COMMS': { x: 2500 * SCALE, y: 1720 * SCALE },
+    'O2': { x: 2200 * SCALE, y: 1200 * SCALE },
+    'REACTOR': { x: 150 * SCALE, y: 1300 * SCALE }
+  },
+  'Airship': {
+    'LIGHTS': { x: 200 * SCALE, y: 1450 * SCALE },
+    'COMMS': { x: 300 * SCALE, y: 550 * SCALE },
+    'O2': { x: 1000 * SCALE, y: 1050 * SCALE },
+    'REACTOR': { x: 450 * SCALE, y: 1400 * SCALE }
+  }
+};
+
 // Compatibility exports
 export const WALLS = MAPS_DATA['The Skeld'].walls;
 export const PROPS = MAPS_DATA['The Skeld'].props;

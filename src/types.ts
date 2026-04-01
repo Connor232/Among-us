@@ -17,7 +17,9 @@ export enum PlayerRole {
 
 export enum SabotageType {
   LIGHTS = 'LIGHTS',
-  COMMS = 'COMMS'
+  COMMS = 'COMMS',
+  O2 = 'O2',
+  REACTOR = 'REACTOR'
 }
 
 export interface Vector2D {

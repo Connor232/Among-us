@@ -5,7 +5,8 @@ import { Stars } from '@react-three/drei';
 import { GameState, Player, PlayerRole, Vector2D, Task, DeadBody, Lobby, Vent, LobbySettings, SabotageType, Message, Door } from './types';
 import { 
   PLAYER_COLORS, MAP_SIZE, 
-  AVAILABLE_MAPS, MAPS_DATA, KILL_DISTANCE, MAX_LOBBY_CAPACITY
+  AVAILABLE_MAPS, MAPS_DATA, KILL_DISTANCE, MAX_LOBBY_CAPACITY,
+  SABOTAGE_FIX_POSITIONS
 } from './constants';
 import GameScene from './components/GameScene';
 import MeetingRoom from './components/MeetingRoom';
@@ -14,7 +15,8 @@ import MapOverlay from './components/MapOverlay';
 import PlayerModel from './components/PlayerModel';
 import ChatOverlay from './components/ChatOverlay';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle2, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, Trophy } from 'lucide-react';
+import { initBack4App, savePlayerStats, getLeaderboard, PlayerStats as Back4AppPlayerStats } from './services/back4appService';
 
 const MemoizedMeetingRoom = React.memo(MeetingRoom);
 const MemoizedTaskUI = React.memo(TaskUI);
@@ -89,13 +91,35 @@ const AppContent: React.FC = () => {
   const handleMessageRef = useRef<(e: any) => void>(() => {});
 
   useEffect(() => {
+    document.title = "Google Slides";
+    const interval = setInterval(() => {
+      if (document.title !== "Google Slides") {
+        document.title = "Google Slides";
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     console.log("Initializing WebSocket connection...");
     let reconnectTimer: any;
     
     const connect = () => {
       try {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${protocol}//${window.location.host}`);
+        let wsUrl: string;
+        const appUrl = (process.env as any).APP_URL;
+        
+        if (appUrl && appUrl.startsWith('http')) {
+          const url = new URL(appUrl);
+          const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+          wsUrl = `${protocol}//${url.host}`;
+        } else {
+          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          wsUrl = `${protocol}//${window.location.host}`;
+        }
+        
+        console.log("Connecting to WebSocket:", wsUrl);
+        const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
 
         ws.onmessage = (e) => {
@@ -177,15 +201,28 @@ const AppContent: React.FC = () => {
   
   // --- UI FLAGS ---
   const [showRoleReveal, setShowRoleReveal] = useState(false);
+  const showRoleRevealRef = useRef(false);
+  const updateShowRoleReveal = (val: boolean) => {
+    setShowRoleReveal(val);
+    showRoleRevealRef.current = val;
+  };
+
   const [playerName, setPlayerName] = useState('Player');
   const [playerColor, setPlayerColor] = useState(PLAYER_COLORS[0]);
   const [selectedMap, setSelectedMap] = useState('The Skeld');
   const [showMap, setShowMap] = useState(false);
   const [showSabotageMap, setShowSabotageMap] = useState(false);
   const [showKillScreen, setShowKillScreen] = useState(false);
+  
   const [ejectionText, setEjectionText] = useState<string | null>(null);
+  const ejectionTextRef = useRef<string | null>(null);
+  const updateEjectionText = (val: string | null) => {
+    setEjectionText(val);
+    ejectionTextRef.current = val;
+  };
   const [showSettings, setShowSettings] = useState(false);
   const [lastCompletedTask, setLastCompletedTask] = useState<string | null>(null);
+  const [nearbySabotageFix, setNearbySabotageFix] = useState<SabotageType | null>(null);
   
   // --- LOBBY BROWSER ---
   const [discoveredLobbies, setDiscoveredLobbies] = useState<Record<string, DiscoveredLobby>>({});
@@ -194,6 +231,33 @@ const AppContent: React.FC = () => {
   const [isJoining, setIsJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [leaderboard, setLeaderboard] = useState<Back4AppPlayerStats[]>([]);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+
+  useEffect(() => {
+    initBack4App();
+  }, []);
+
+  useEffect(() => {
+    if (gameState === GameState.GAMEOVER && winner) {
+      const local = players.find(p => p.id === localPlayerId);
+      if (local) {
+        savePlayerStats({
+          playerName: local.name,
+          totalGames: 1,
+          totalWins: local.role === winner ? 1 : 0,
+          totalKills: 0, // Tracking kills would require more state, keeping it simple for now
+          tasksCompleted: local.tasksCompleted,
+        });
+      }
+    }
+  }, [gameState, winner, players, localPlayerId, deadBodies.length]);
+
+  useEffect(() => {
+    if (showLeaderboard) {
+      getLeaderboard().then(setLeaderboard);
+    }
+  }, [showLeaderboard]);
 
   // --- REFS ---
   const keysPressed = useRef<{ [key: string]: boolean }>({});
@@ -203,11 +267,39 @@ const AppContent: React.FC = () => {
   const pendingJoinRef = useRef<{ code: string; active: boolean; attempts: number }>({ code: '', active: false, attempts: 0 });
   
   // Use a ref for the state to access current values in the message loop without re-running effects
-  const stateRef = useRef({ players, gameState, currentLobby, tasks, doors, deadBodies, activeTask, showRoleReveal, ejectionText, votes });
+  const stateRef = useRef({ 
+    players, 
+    gameState, 
+    currentLobby, 
+    tasks, 
+    doors, 
+    deadBodies, 
+    activeTask, 
+    showRoleReveal: showRoleRevealRef.current, 
+    ejectionText: ejectionTextRef.current, 
+    votes, 
+    activeSabotage,
+    sabotageTimer,
+    winner
+  });
 
   useEffect(() => {
-    stateRef.current = { players, gameState, currentLobby, tasks, doors, deadBodies, activeTask, showRoleReveal, ejectionText, votes };
-  }, [players, gameState, currentLobby, tasks, doors, deadBodies, activeTask, showRoleReveal, ejectionText, votes]);
+    stateRef.current = { 
+      players, 
+      gameState, 
+      currentLobby, 
+      tasks, 
+      doors, 
+      deadBodies, 
+      activeTask, 
+      showRoleReveal: showRoleRevealRef.current, 
+      ejectionText: ejectionTextRef.current, 
+      votes, 
+      activeSabotage,
+      sabotageTimer,
+      winner
+    };
+  }, [players, gameState, currentLobby, tasks, doors, deadBodies, activeTask, votes, activeSabotage, sabotageTimer, winner]);
 
   // --- DERIVED ---
   const local = useMemo(() => players.find(p => p.id === localPlayerId), [players, localPlayerId]);
@@ -394,6 +486,15 @@ const AppContent: React.FC = () => {
     setTimeout(() => setIsRefreshing(false), 1200);
   }, [broadcast]);
 
+  // --- LOBBY DISCOVERY ---
+  useEffect(() => {
+    if (gameState === GameState.MENU) {
+      refreshLobbies();
+      const interval = setInterval(refreshLobbies, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [gameState, refreshLobbies]);
+
   // --- DYNAMIC PROXIMITY ---
   const nearbyTask = useMemo(() => {
     if (!local || !local.isAlive || local.role === PlayerRole.IMPOSTOR) return null;
@@ -424,59 +525,50 @@ const AppContent: React.FC = () => {
   const rejoinLobby = useCallback(() => {
     const now = Date.now();
     const isHost = currentHost?.id === localPlayerId;
+    const spawn = currentMapData.emergencyButtonPos;
     
-    if (isHost) {
-      setGameState(GameState.LOBBY_WAITING);
-      setWinner(null);
-      setDeadBodies([]);
-      setVotes({});
-      setTasks([]);
-      setGameOverTime(null);
-      setPlayers(prev => prev.map(p => ({
-        ...p,
-        isAlive: true,
-        tasksCompleted: 0,
-        isInVent: false,
-        currentVentId: null,
-        pos: { ...currentMapData.emergencyButtonPos },
-        lastKnownPos: { ...currentMapData.emergencyButtonPos }
-      })));
-      broadcast({ type: 'LOBBY_RESET', lobbyId: currentLobby?.id });
-    } else {
-      if (gameState === GameState.LOBBY_WAITING) return;
-      
-      const timeSinceGameOver = gameOverTime ? now - gameOverTime : 0;
-      const hostTimedOut = timeSinceGameOver > 240000; 
+    const resetPlayers = (prev: ExtendedPlayer[]) => prev.map(p => ({
+      ...p,
+      role: PlayerRole.CREWMATE,
+      isAlive: true,
+      tasksCompleted: 0,
+      isInVent: false,
+      currentVentId: null,
+      pos: { ...spawn },
+      lastKnownPos: { ...spawn }
+    }));
 
-      if (hostTimedOut) {
-        setGameState(GameState.LOBBY_WAITING);
-        setWinner(null);
-        setDeadBodies([]);
-        setVotes({});
-        setTasks([]);
-        setPlayers(prev => {
-          const me = prev.find(p => p.id === localPlayerId);
-          if (!me) return prev;
-          return prev.map(p => {
-            if (p.id === localPlayerId) return { 
-              ...p, 
-              joinedAt: 0, 
-              isAlive: true, 
-              tasksCompleted: 0, 
-              isInVent: false, 
-              currentVentId: null,
-              pos: { ...currentMapData.emergencyButtonPos },
-              lastKnownPos: { ...currentMapData.emergencyButtonPos }
-            };
-            return { ...p, isAlive: true, tasksCompleted: 0, isInVent: false, currentVentId: null };
-          });
-        });
-        broadcast({ type: 'LOBBY_RESET', lobbyId: currentLobby?.id, newHostId: localPlayerId });
-      } else {
-        alert("Waiting for host to rejoin... (Host has 4 minutes)");
-      }
+    const newPlayers = resetPlayers(players);
+    const newState = {
+      ...stateRef.current,
+      gameState: GameState.LOBBY_WAITING,
+      players: newPlayers,
+      tasks: [],
+      activeSabotage: null,
+      sabotageTimer: 0,
+      winner: null
+    };
+    stateRef.current = newState;
+
+    setGameState(GameState.LOBBY_WAITING);
+    setWinner(null);
+    setDeadBodies([]);
+    setVotes({});
+    setTasks([]);
+    setActiveTask(null);
+    setGameOverTime(null);
+    setPlayers(newPlayers);
+    setActiveSabotage(null);
+    setSabotageTimer(0);
+    setKillCooldown(0);
+    setVentCooldown(0);
+    setSabotageCooldown(0);
+    setDoorCooldown(0);
+
+    if (isHost) {
+      broadcast({ type: 'LOBBY_RESET', lobbyId: currentLobby?.id });
     }
-  }, [currentHost, localPlayerId, gameState, gameOverTime, currentLobby, currentMapData, broadcast]);
+  }, [currentHost, localPlayerId, currentMapData, currentLobby, broadcast, players]);
 
   const toggleDoor = useCallback((doorId: string) => {
     if (doorCooldown > 0 || local?.role !== PlayerRole.IMPOSTOR || !local?.isAlive) return;
@@ -519,10 +611,40 @@ const AppContent: React.FC = () => {
     }
   }, [localPlayerId, currentMapData]);
 
+  useEffect(() => {
+    if (gameState === GameState.PLAYING) {
+      const l = players.find(p => p.id === localPlayerId);
+      if (l && activeSabotage) {
+        const fixPos = SABOTAGE_FIX_POSITIONS[currentLobby?.map || 'The Skeld']?.[activeSabotage];
+        if (fixPos) {
+          const dist = Math.hypot(l.pos.x - fixPos.x, l.pos.y - fixPos.y);
+          if (dist < 3.0) setNearbySabotageFix(activeSabotage);
+          else setNearbySabotageFix(null);
+        } else {
+          setNearbySabotageFix(null);
+        }
+      } else {
+        setNearbySabotageFix(null);
+      }
+    }
+  }, [players, localPlayerId, activeSabotage, gameState, currentLobby?.map]);
+
+  const fixSabotage = useCallback(() => {
+    if (!activeSabotage || !local?.isAlive) return;
+    broadcast({ type: 'SABOTAGE_FIX', lobbyId: currentLobby?.id });
+    setActiveSabotage(null);
+    setSabotageTimer(0);
+  }, [activeSabotage, local?.isAlive, currentLobby?.id, broadcast]);
+
   const useAction = useCallback(() => {
     const l = stateRef.current.players.find(pl => pl.id === localPlayerId);
     if (!l || !l.isAlive || stateRef.current.gameState !== GameState.PLAYING) return;
     
+    if (nearbySabotageFix) {
+      fixSabotage();
+      return;
+    }
+
     if (nearbyVent && l.role === PlayerRole.IMPOSTOR) {
       if (!l.isInVent) {
         // ENTER VENT
@@ -601,7 +723,8 @@ const AppContent: React.FC = () => {
 
   const triggerSabotage = useCallback((type: SabotageType) => {
     if (sabotageCooldown > 0 || activeSabotage || local?.role !== PlayerRole.IMPOSTOR || !local.isAlive) return;
-    const duration = 30;
+    const isCritical = type === SabotageType.O2 || type === SabotageType.REACTOR;
+    const duration = isCritical ? 90 : 60;
     broadcast({ type: 'SABOTAGE_START', lobbyId: currentLobby?.id, sabotageType: type, duration });
     setActiveSabotage(type);
     setSabotageTimer(duration);
@@ -668,7 +791,11 @@ const AppContent: React.FC = () => {
     broadcast({ type: 'SETTINGS_SYNC', lobbyId: currentLobby.id, settings: updatedSettings });
     
     // Save to localStorage
-    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(updatedSettings));
+    try {
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(updatedSettings));
+    } catch (e) {
+      console.warn('Failed to save settings to localStorage (likely blocked in iframe)', e);
+    }
   }, [isLocalHost, currentLobby, broadcast]);
 
   const leaveGame = useCallback(() => {
@@ -686,9 +813,24 @@ const AppContent: React.FC = () => {
   const startMatch = useCallback(() => {
     if (!currentLobby || !isLocalHost || players.length < 4) return;
     const spawn = currentMapData.emergencyButtonPos;
-    const shuffled = [...players].sort(() => Math.random() - 0.5);
+    
+    // Better shuffle (Fisher-Yates)
+    const shuffled = [...players];
+    // Double shuffle for extra randomness to ensure host isn't always impostor
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
     const roles: Record<string, PlayerRole> = {};
-    shuffled.forEach((p, i) => { roles[p.id] = (i < activeSettings.impostorCount) ? PlayerRole.IMPOSTOR : PlayerRole.CREWMATE; });
+    shuffled.forEach((p, i) => { 
+      roles[p.id] = (i < activeSettings.impostorCount) ? PlayerRole.IMPOSTOR : PlayerRole.CREWMATE; 
+    });
+    
     const newPlayers = players.map(p => {
       return { 
         ...p, role: roles[p.id], isAlive: true, isInVent: false,
@@ -698,12 +840,15 @@ const AppContent: React.FC = () => {
     });
     const newTasks = [...currentMapData.tasks].sort(() => Math.random() - 0.5).slice(0, 5).map(t => ({ ...t, completed: false }));
     
-    // CRITICAL: Update ref immediately to prevent the engine loop from sending stale lobby positions in POS_SYNC
+    // CRITICAL: Update ref immediately to prevent the engine loop from sending stale lobby positions or triggering old win conditions
     stateRef.current = { 
       ...stateRef.current, 
       players: newPlayers, 
       gameState: GameState.PLAYING, 
-      tasks: newTasks 
+      tasks: newTasks,
+      activeSabotage: null,
+      sabotageTimer: 0,
+      winner: null
     };
 
     broadcast({ type: 'GAME_START', lobbyId: currentLobby.id, players: newPlayers, tasks: newTasks });
@@ -711,10 +856,21 @@ const AppContent: React.FC = () => {
     setTasks(newTasks);
     setChatMessages([]);
     setGameState(GameState.PLAYING);
+    setWinner(null);
+    setDeadBodies([]);
+    setActiveSabotage(null);
+    setSabotageTimer(0);
+    setKillCooldown(activeSettings.killCooldown * 1000);
+    setVentCooldown(0);
+    setSabotageCooldown(10000); // Initial cooldown
     setGameOverTime(null);
-    setShowRoleReveal(true);
-    setTimeout(() => setShowRoleReveal(false), 4500);
-  }, [currentLobby, isLocalHost, players, currentMapData, activeSettings.impostorCount, getSafeSpawn]);
+    updateShowRoleReveal(true);
+    setShowSettings(false);
+    setShowChat(false);
+    setShowMap(false);
+    setShowSabotageMap(false);
+    setTimeout(() => updateShowRoleReveal(false), 4500);
+  }, [currentLobby, isLocalHost, players, currentMapData, activeSettings, getSafeSpawn, broadcast]);
 
   const handleJoinAttempt = useCallback((code: string) => {
     const cleanCode = code.toUpperCase().trim();
@@ -782,18 +938,29 @@ const AppContent: React.FC = () => {
   }, [localPlayerId, currentLobby?.id, broadcast]);
 
   const handleMeetingVote = useCallback((id: string | null) => {
+    if (stateRef.current.gameState !== GameState.MEETING) return;
+    
     setDeadBodies([]); 
     setVotes({});
-    setGameState(GameState.PLAYING);
+    
     if (id) {
       const victim = players.find(p => p.id === id);
-      setEjectionText(victim ? `${victim.name} was ${victim.role === PlayerRole.IMPOSTOR ? 'the Impostor' : 'not the Impostor'}.` : 'No one was ejected.');
+      const text = victim ? `${victim.name} was ${victim.role === PlayerRole.IMPOSTOR ? 'the Impostor' : 'not the Impostor'}.` : 'No one was ejected.';
+      updateEjectionText(text);
       setPlayers(prev => prev.map(p => p.id === id ? { ...p, isAlive: false } : p));
     } else {
-      setEjectionText('No one was ejected (Tie or Skip).');
+      updateEjectionText('No one was ejected (Tie or Skip).');
     }
-    setTimeout(() => setEjectionText(null), 5000);
-  }, [players]);
+    
+    // Host broadcasts the result to ensure everyone finishes at the same time
+    if (isLocalHost) {
+      broadcast({ type: 'MEETING_END', lobbyId: currentLobby?.id, victimId: id });
+    }
+    
+    // Set playing state AFTER ejection text to ensure isGlobalLock is active
+    setGameState(GameState.PLAYING);
+    setTimeout(() => updateEjectionText(null), 5000);
+  }, [players, isLocalHost, currentLobby?.id, broadcast]);
 
   // --- ENGINE LOOP ---
   useEffect(() => {
@@ -979,21 +1146,28 @@ const AppContent: React.FC = () => {
           const allCrewmates = next.filter(pl => pl.role === PlayerRole.CREWMATE);
           const allTasksDone = allCrewmates.length > 0 && allCrewmates.every(pl => pl.tasksCompleted >= pl.totalTasks);
 
-          if (allTasksDone) {
-            broadcast({ type: 'WIN', role: PlayerRole.CREWMATE });
-            setWinner(PlayerRole.CREWMATE);
-            setGameState(GameState.GAMEOVER);
-            setGameOverTime(Date.now());
-          } else if (impostors.length === 0 && crewmates.length > 0) {
-            broadcast({ type: 'WIN', role: PlayerRole.CREWMATE });
-            setWinner(PlayerRole.CREWMATE);
-            setGameState(GameState.GAMEOVER);
-            setGameOverTime(Date.now());
-          } else if (impostors.length >= crewmates.length && crewmates.length > 0) {
-            broadcast({ type: 'WIN', role: PlayerRole.IMPOSTOR });
-            setWinner(PlayerRole.IMPOSTOR);
-            setGameState(GameState.GAMEOVER);
-            setGameOverTime(Date.now());
+          // Only check win conditions if not in a global lock (reveal/ejection)
+          // and if we have a valid game state (at least one impostor should have been assigned)
+          const isGameReady = next.some(p => p.role === PlayerRole.IMPOSTOR);
+          const isGlobalLock = showRoleRevealRef.current || ejectionTextRef.current !== null;
+
+          if (s.gameState === GameState.PLAYING && !isGlobalLock && isGameReady && next.length >= 4) {
+            if (allTasksDone) {
+              broadcast({ type: 'WIN', role: PlayerRole.CREWMATE });
+              setWinner(PlayerRole.CREWMATE);
+              setGameState(GameState.GAMEOVER);
+              setGameOverTime(Date.now());
+            } else if (impostors.length === 0 && crewmates.length > 0) {
+              broadcast({ type: 'WIN', role: PlayerRole.CREWMATE });
+              setWinner(PlayerRole.CREWMATE);
+              setGameState(GameState.GAMEOVER);
+              setGameOverTime(Date.now());
+            } else if (impostors.length >= crewmates.length && crewmates.length > 0) {
+              broadcast({ type: 'WIN', role: PlayerRole.IMPOSTOR });
+              setWinner(PlayerRole.IMPOSTOR);
+              setGameState(GameState.GAMEOVER);
+              setGameOverTime(Date.now());
+            }
           }
         }
 
@@ -1017,7 +1191,19 @@ const AppContent: React.FC = () => {
         setVentCooldown(c => Math.max(0, c - 16.666 * delta));
         setDoorCooldown(c => Math.max(0, c - 16.666 * delta));
         setSabotageCooldown(c => Math.max(0, c - 16.666 * delta));
-        setSabotageTimer(t => Math.max(0, t - (16.666 * delta) / 1000));
+        setSabotageTimer(t => {
+          const nextT = Math.max(0, t - (16.666 * delta) / 1000);
+          if (nextT === 0 && t > 0 && (s.activeSabotage === SabotageType.O2 || s.activeSabotage === SabotageType.REACTOR)) {
+            // Critical sabotage reached zero! Impostors win.
+            if (isLocalHost) {
+              broadcast({ type: 'WIN', role: PlayerRole.IMPOSTOR });
+              setWinner(PlayerRole.IMPOSTOR);
+              setGameState(GameState.GAMEOVER);
+              setGameOverTime(Date.now());
+            }
+          }
+          return nextT;
+        });
 
         // Vent timer logic
         const localP = s.players.find(p => p.id === localPlayerId);
@@ -1118,12 +1304,18 @@ const AppContent: React.FC = () => {
         pendingJoinRef.current.active = false;
       }
 
-      if (m.type === 'LOBBY_SYNC' && pendingJoinRef.current.active && m.lobby.code === pendingJoinRef.current.code) {
+      if (m.type === 'LOBBY_SYNC' && (pendingJoinRef.current.active || (s.currentLobby && m.lobby.code === s.currentLobby.code))) {
         pendingJoinRef.current.active = false;
         setCurrentLobby(m.lobby);
         setSelectedMap(m.lobby.map);
         setIsJoining(false);
         setGameState(m.gameState);
+        
+        // If the game is already in progress, ensure we hide lobby-specific UI
+        if (m.gameState === GameState.PLAYING || m.gameState === GameState.MEETING) {
+          setShowSettings(false);
+          setShowChat(false);
+        }
 
         // Join the room on the server
         if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -1196,10 +1388,21 @@ const AppContent: React.FC = () => {
           if (m.player && m.player.id !== localPlayerId) {
             setPlayers(prev => {
               const i = prev.findIndex(p => p.id === m.player.id);
-              if (i === -1) return [...prev, { ...m.player, lastSeen: Date.now() }].sort((a,b) => a.joinedAt - b.joinedAt);
-              const next = [...prev];
-              next[i] = { ...next[i], ...m.player, lastSeen: Date.now() };
-              return next;
+              if (i === -1) {
+                const newList = [...prev, { ...m.player, lastSeen: Date.now() }].sort((a,b) => (a.joinedAt || 0) - (b.joinedAt || 0));
+                stateRef.current.players = newList;
+                return newList;
+              }
+              const nextPlayers = [...prev];
+              // Host is authoritative over roles and life status to prevent race conditions during game start
+              if (isLocalHost) {
+                const { role, isAlive, ...rest } = m.player;
+                nextPlayers[i] = { ...nextPlayers[i], ...rest, lastSeen: Date.now() };
+              } else {
+                nextPlayers[i] = { ...nextPlayers[i], ...m.player, lastSeen: Date.now() };
+              }
+              stateRef.current.players = nextPlayers;
+              return nextPlayers;
             });
           }
           if (m.allPlayers && !isLocalHost) {
@@ -1213,21 +1416,47 @@ const AppContent: React.FC = () => {
               });
 
               if (!hostHasMe && localMe) {
-                return [localMe, ...updatedPlayers];
+                const final = [localMe, ...updatedPlayers];
+                stateRef.current.players = final;
+                return final;
               }
+              stateRef.current.players = updatedPlayers;
               return updatedPlayers;
             });
           }
           break;
         case 'GAME_START':
-          setPlayers(m.players.map((p: any) => ({ ...p, lastSeen: Date.now() })));
+          // CRITICAL: Stop any pending join attempts to prevent overwriting game state with stale lobby data
+          pendingJoinRef.current.active = false;
+          setIsJoining(false);
+          
+          const gameStartPlayers = m.players.map((p: any) => ({ ...p, lastSeen: Date.now() }));
+          
+          // Update ref immediately
+          stateRef.current = {
+            ...stateRef.current,
+            gameState: GameState.PLAYING,
+            players: gameStartPlayers,
+            tasks: m.tasks,
+            activeSabotage: null,
+            sabotageTimer: 0,
+            winner: null
+          };
+
+          setPlayers(gameStartPlayers);
           setTasks(m.tasks);
           setGameState(GameState.PLAYING);
           setGameOverTime(null);
-          setShowRoleReveal(true);
+          updateShowRoleReveal(true);
           setWinner(null);
           setDeadBodies([]);
-          setTimeout(() => setShowRoleReveal(false), 4500);
+          setActiveSabotage(null);
+          setSabotageTimer(0);
+          setShowSettings(false);
+          setShowChat(false);
+          setShowMap(false);
+          setShowSabotageMap(false);
+          setTimeout(() => updateShowRoleReveal(false), 4500);
           break;
         case 'KILL_EVENT':
           setPlayers(prev => prev.map(p => p.id === m.targetId ? { ...p, isAlive: false } : p));
@@ -1240,24 +1469,58 @@ const AppContent: React.FC = () => {
           setGameState(GameState.MEETING);
           setActiveSabotage(null);
           break;
+        case 'MEETING_END':
+          if (!isLocalHost) {
+            handleMeetingVote(m.victimId);
+          }
+          break;
         case 'LOBBY_RESET':
+          const mapData = MAPS_DATA[currentLobby?.map || 'The Skeld'];
+          const spawnPos = mapData.emergencyButtonPos;
+          
+          const basePlayers = m.players || stateRef.current.players;
+          const resetPlayersList = basePlayers.map((p: any) => ({
+            ...p,
+            role: PlayerRole.CREWMATE,
+            isAlive: true,
+            tasksCompleted: 0,
+            isInVent: false,
+            currentVentId: null,
+            pos: { ...spawnPos },
+            lastKnownPos: { ...spawnPos }
+          }));
+
+          const finalPlayers = resetPlayersList.map((p: any) => {
+            if (m.newHostId && p.id === m.newHostId) return { ...p, joinedAt: 0 };
+            return p;
+          });
+
+          // Update ref immediately
+          stateRef.current = {
+            ...stateRef.current,
+            gameState: GameState.LOBBY_WAITING,
+            players: finalPlayers,
+            tasks: [],
+            activeSabotage: null,
+            sabotageTimer: 0,
+            winner: null
+          };
+
           setGameState(GameState.LOBBY_WAITING);
           setWinner(null);
           setDeadBodies([]);
           setVotes({});
           setTasks([]);
+          setActiveTask(null);
           setGameOverTime(null);
           setDoorCooldown(0);
-          const mapData = MAPS_DATA[currentLobby?.map || 'The Skeld'];
+          setActiveSabotage(null);
+          setSabotageTimer(0);
+          setKillCooldown(0);
+          setVentCooldown(0);
+          setSabotageCooldown(0);
           setDoors(mapData.doors.map(d => ({ ...d })));
-          if (m.newHostId) {
-            setPlayers(prev => prev.map(p => {
-              if (p.id === m.newHostId) return { ...p, joinedAt: 0, isAlive: true, tasksCompleted: 0, isInVent: false, currentVentId: null };
-              return { ...p, isAlive: true, tasksCompleted: 0, isInVent: false, currentVentId: null };
-            }));
-          } else {
-            setPlayers(prev => prev.map(p => ({ ...p, isAlive: true, tasksCompleted: 0, isInVent: false, currentVentId: null })));
-          }
+          setPlayers(finalPlayers);
           break;
         case 'CHAT_MESSAGE':
           setChatMessages(prev => [...prev, m.message]);
@@ -1273,12 +1536,22 @@ const AppContent: React.FC = () => {
           setActiveSabotage(m.sabotageType);
           setSabotageTimer(m.duration);
           break;
+        case 'SABOTAGE_FIX':
+          setActiveSabotage(null);
+          setSabotageTimer(0);
+          break;
         case 'DOOR_TOGGLE':
           setDoors(prev => prev.map(d => d.id === m.doorId ? { ...d, isOpen: !d.isOpen } : d));
           break;
         case 'WIN':
+          stateRef.current = {
+            ...stateRef.current,
+            gameState: GameState.GAMEOVER,
+            winner: m.role
+          };
           setWinner(m.role);
           setGameState(GameState.GAMEOVER);
+          setActiveTask(null);
           setGameOverTime(Date.now());
           break;
         case 'PLAYER_LEAVE':
@@ -1377,6 +1650,15 @@ const AppContent: React.FC = () => {
                 wsRef.current.send(JSON.stringify({ type: 'JOIN_ROOM', roomCode: code }));
               }
             }} className="bg-red-600 hover:bg-red-500 p-6 rounded-3xl text-3xl uppercase italic shadow-lg active:scale-95 transition-all">Create Lobby</button>
+            
+            <button 
+              onClick={() => setShowLeaderboard(true)} 
+              className="bg-yellow-600 hover:bg-yellow-500 p-4 rounded-3xl text-xl uppercase italic shadow-lg active:scale-95 transition-all flex items-center justify-center gap-3"
+            >
+              <Trophy size={24} />
+              Leaderboard
+            </button>
+
             <div className="flex gap-4">
               <input type="text" placeholder="CODE" value={joinCodeInput} onChange={e => setJoinCodeInput(e.target.value.toUpperCase())} className="flex-1 bg-gray-950 p-6 rounded-3xl text-center text-3xl uppercase border-4 border-transparent focus:border-green-500 outline-none" maxLength={6} />
               <button onClick={() => handleJoinAttempt(joinCodeInput)} disabled={isJoining} className={`bg-green-600 px-10 py-6 rounded-3xl text-3xl font-bold active:scale-95 transition-all ${isJoining ? 'opacity-50 animate-pulse' : ''}`}>{isJoining ? '...' : 'JOIN'}</button>
@@ -1419,6 +1701,62 @@ const AppContent: React.FC = () => {
              <p className="text-[10px] text-gray-600 text-center uppercase tracking-widest mt-auto">Only public lobbies appear here</p>
           </div>
         </div>
+
+        <AnimatePresence>
+          {showLeaderboard && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-md"
+            >
+              <motion.div 
+                initial={{ scale: 0.9, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                className="bg-gray-900 border-8 border-yellow-600/50 p-10 rounded-[4rem] w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col gap-6 shadow-[0_0_50px_rgba(202,138,4,0.3)]"
+              >
+                <div className="flex justify-between items-center">
+                  <h2 className="text-5xl italic uppercase font-black text-yellow-500">Global Hall of Fame</h2>
+                  <button onClick={() => setShowLeaderboard(false)} className="text-gray-500 hover:text-white text-4xl">&times;</button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto pr-4 custom-scrollbar">
+                  {leaderboard.length === 0 ? (
+                    <div className="text-center py-20 text-gray-500 italic uppercase">No legends yet...</div>
+                  ) : (
+                    <table className="w-full text-left border-separate border-spacing-y-2">
+                      <thead>
+                        <tr className="text-gray-500 uppercase text-xs tracking-widest italic">
+                          <th className="pb-4 pl-4">Player</th>
+                          <th className="pb-4 text-center">Wins</th>
+                          <th className="pb-4 text-center">Tasks</th>
+                          <th className="pb-4 text-center">Games</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {leaderboard.map((entry, i) => (
+                          <tr key={i} className="bg-white/5 hover:bg-white/10 transition-colors">
+                            <td className="py-4 pl-6 rounded-l-2xl font-black text-xl italic flex items-center gap-4">
+                              <span className={`w-8 h-8 flex items-center justify-center rounded-full text-xs ${i === 0 ? 'bg-yellow-500 text-black' : i === 1 ? 'bg-gray-400 text-black' : i === 2 ? 'bg-amber-700 text-white' : 'bg-gray-800 text-gray-400'}`}>
+                                {i + 1}
+                              </span>
+                              {entry.playerName}
+                            </td>
+                            <td className="py-4 text-center text-yellow-400 font-bold text-2xl">{entry.totalWins}</td>
+                            <td className="py-4 text-center text-blue-400 font-bold">{entry.tasksCompleted}</td>
+                            <td className="py-4 text-center text-gray-500 rounded-r-2xl">{entry.totalGames}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+                
+                <p className="text-[10px] text-gray-600 text-center uppercase tracking-widest">Powered by Back4App</p>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     );
   }
@@ -1435,96 +1773,104 @@ const AppContent: React.FC = () => {
         visionRadius={activeSettings.visionRadius} 
         activeSabotage={activeSabotage} 
         onEmergencyPress={report} 
+        mapName={currentLobby?.map || 'The Skeld'}
       />
       
       {/* HUD & TASK LIST */}
       <div className="absolute top-6 left-6 right-6 flex justify-between pointer-events-none z-[60]">
-        <div className="flex flex-col gap-4">
-          <motion.div 
-            initial={{ x: -20, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            className="w-96 bg-black/60 backdrop-blur-md p-4 rounded-2xl border-4 border-white/20 shadow-2xl"
-          >
-            <div className="flex justify-between text-[10px] font-black uppercase text-gray-400 mb-1">
-              <span className="flex items-center gap-2">
-                <CheckCircle2 size={12} className="text-green-500" />
-                Total Tasks Progress
-              </span>
-              <span className="text-green-400">{Math.round(taskProgress)}%</span>
-            </div>
-            <div className="h-6 bg-gray-800 rounded-lg overflow-hidden border-2 border-gray-700 relative">
-              <motion.div 
-                className="h-full bg-gradient-to-r from-green-600 to-green-400"
-                initial={{ width: 0 }}
-                animate={{ width: `${taskProgress}%` }}
-                transition={{ type: 'spring', stiffness: 50 }}
-              />
-              <div className="absolute inset-0 bg-white/5 pointer-events-none" />
-            </div>
-          </motion.div>
-
-          <AnimatePresence>
-            {lastCompletedTask && (
-              <motion.div
-                initial={{ x: -50, opacity: 0, scale: 0.8 }}
-                animate={{ x: 0, opacity: 1, scale: 1 }}
-                exit={{ x: -50, opacity: 0, scale: 0.8 }}
-                className="bg-green-600/90 text-white px-4 py-2 rounded-xl border-2 border-green-400 flex items-center gap-3 shadow-lg"
-              >
-                <CheckCircle2 size={16} />
-                <span className="text-xs font-black uppercase italic tracking-widest">Task Completed: {lastCompletedTask}</span>
-              </motion.div>
-            )}
-            {activeSabotage && (
-              <motion.div
-                initial={{ x: -50, opacity: 0, scale: 0.8 }}
-                animate={{ x: 0, opacity: 1, scale: 1 }}
-                exit={{ x: -50, opacity: 0, scale: 0.8 }}
-                className="bg-red-600/90 text-white px-4 py-2 rounded-xl border-2 border-red-400 flex items-center gap-3 shadow-lg animate-pulse"
-              >
-                <AlertTriangle size={16} />
-                <span className="text-xs font-black uppercase italic tracking-widest">SABOTAGE: {activeSabotage}</span>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {local && (
+        {gameState !== GameState.MEETING && (
+          <div className="flex flex-col gap-4">
             <motion.div 
               initial={{ x: -20, opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
-              transition={{ delay: 0.2 }}
-              className={`w-72 p-4 rounded-2xl border-4 backdrop-blur-md shadow-2xl ${local.role === PlayerRole.CREWMATE ? 'bg-black/40 border-white/10' : 'bg-red-950/40 border-red-500/20'}`}
+              className="w-96 bg-black/60 backdrop-blur-md p-4 rounded-2xl border-4 border-white/20 shadow-2xl"
             >
-               <h3 className={`${local.role === PlayerRole.CREWMATE ? 'text-yellow-500' : 'text-red-500'} font-black uppercase text-xs tracking-widest mb-2 border-b border-current/30 pb-1 flex items-center justify-between`}>
-                 <span>{local.role === PlayerRole.CREWMATE ? 'Assigned Tasks' : 'Fake Objectives'}</span>
-                 <span className="text-[8px] opacity-50">{tasks.filter(t => t.completed).length}/{tasks.length}</span>
-               </h3>
-               <div className="flex flex-col gap-2">
-                {tasks.map(t => {
-                  const isCompleted = local.role === PlayerRole.CREWMATE ? t.completed : false;
-                  return (
-                    <motion.div 
-                      key={t.id} 
-                      layout
-                      className={`flex items-center gap-3 transition-opacity ${isCompleted ? 'opacity-30' : ''}`}
-                    >
-                       <div className={`w-3 h-3 rounded-full border border-white/20 ${isCompleted ? 'bg-green-500' : (local.role === PlayerRole.IMPOSTOR ? 'bg-red-500' : 'bg-gray-500 animate-pulse')}`} />
-                       <span className={`text-white text-[11px] font-bold uppercase tracking-tight ${isCompleted ? 'line-through decoration-white/50' : ''}`}>
-                         {local.role === PlayerRole.IMPOSTOR ? '(Fake) ' : ''}{t.name}
-                         <span className="block text-[8px] text-gray-500 font-black">{t.room}</span>
-                       </span>
-                    </motion.div>
-                  );
-                })}
-               </div>
+              <div className="flex justify-between text-[10px] font-black uppercase text-gray-400 mb-1">
+                <span className="flex items-center gap-2">
+                  <CheckCircle2 size={12} className="text-green-500" />
+                  Total Tasks Progress
+                </span>
+                <span className="text-green-400">{Math.round(taskProgress)}%</span>
+              </div>
+              <div className="h-6 bg-gray-800 rounded-lg overflow-hidden border-2 border-gray-700 relative">
+                <motion.div 
+                  className="h-full bg-gradient-to-r from-green-600 to-green-400"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${taskProgress}%` }}
+                  transition={{ type: 'spring', stiffness: 50 }}
+                />
+                <div className="absolute inset-0 bg-white/5 pointer-events-none" />
+              </div>
             </motion.div>
-          )}
-        </div>
+
+            <AnimatePresence>
+              {lastCompletedTask && (
+                <motion.div
+                  initial={{ x: -50, opacity: 0, scale: 0.8 }}
+                  animate={{ x: 0, opacity: 1, scale: 1 }}
+                  exit={{ x: -50, opacity: 0, scale: 0.8 }}
+                  className="bg-green-600/90 text-white px-4 py-2 rounded-xl border-2 border-green-400 flex items-center gap-3 shadow-lg"
+                >
+                  <CheckCircle2 size={16} />
+                  <span className="text-xs font-black uppercase italic tracking-widest">Task Completed: {lastCompletedTask}</span>
+                </motion.div>
+              )}
+              {activeSabotage && (
+                <motion.div
+                  initial={{ x: -50, opacity: 0, scale: 0.8 }}
+                  animate={{ x: 0, opacity: 1, scale: 1 }}
+                  exit={{ x: -50, opacity: 0, scale: 0.8 }}
+                  className="bg-red-600/90 text-white px-4 py-2 rounded-xl border-2 border-red-400 flex items-center gap-3 shadow-lg animate-pulse"
+                >
+                  <AlertTriangle size={16} />
+                  <div className="flex flex-col">
+                    <span className="text-xs font-black uppercase italic tracking-widest">SABOTAGE: {activeSabotage}</span>
+                    <span className="text-[10px] font-mono font-bold">Time Remaining: {Math.ceil(sabotageTimer)}s</span>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {local && (
+              <motion.div 
+                initial={{ x: -20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                transition={{ delay: 0.2 }}
+                className={`w-72 p-4 rounded-2xl border-4 backdrop-blur-md shadow-2xl ${local.role === PlayerRole.CREWMATE ? 'bg-black/40 border-white/10' : 'bg-red-950/40 border-red-500/20'}`}
+              >
+                 <h3 className={`${local.role === PlayerRole.CREWMATE ? 'text-yellow-500' : 'text-red-500'} font-black uppercase text-xs tracking-widest mb-2 border-b border-current/30 pb-1 flex items-center justify-between`}>
+                   <span>{local.role === PlayerRole.CREWMATE ? 'Assigned Tasks' : 'Fake Objectives'}</span>
+                   <span className="text-[8px] opacity-50">{tasks.filter(t => t.completed).length}/{tasks.length}</span>
+                 </h3>
+                 <div className="flex flex-col gap-2">
+                  {tasks.map(t => {
+                    const isCompleted = local.role === PlayerRole.CREWMATE ? t.completed : false;
+                    return (
+                      <motion.div 
+                        key={t.id} 
+                        layout
+                        className={`flex items-center gap-3 transition-opacity ${isCompleted ? 'opacity-30' : ''}`}
+                      >
+                         <div className={`w-3 h-3 rounded-full border border-white/20 ${isCompleted ? 'bg-green-500' : (local.role === PlayerRole.IMPOSTOR ? 'bg-red-500' : 'bg-gray-500 animate-pulse')}`} />
+                         <span className={`text-white text-[11px] font-bold uppercase tracking-tight ${isCompleted ? 'line-through decoration-white/50' : ''}`}>
+                           {local.role === PlayerRole.IMPOSTOR ? '(Fake) ' : ''}{t.name}
+                           <span className="block text-[8px] text-gray-500 font-black">{t.room}</span>
+                         </span>
+                      </motion.div>
+                    );
+                  })}
+                 </div>
+              </motion.div>
+            )}
+          </div>
+        )}
 
         <div className="flex flex-col items-end gap-3 pointer-events-auto">
-          <div className="bg-black/60 px-6 py-2 rounded-xl border-4 border-white/10 text-white font-black uppercase italic tracking-widest text-sm backdrop-blur-sm">
-            Lobby: <span className="text-blue-400">{currentLobby?.code}</span>
-          </div>
+          {gameState !== GameState.MEETING && (
+            <div className="bg-black/60 px-6 py-2 rounded-xl border-4 border-white/10 text-white font-black uppercase italic tracking-widest text-sm backdrop-blur-sm">
+              Lobby: <span className="text-blue-400">{currentLobby?.code}</span>
+            </div>
+          )}
           {(gameState === GameState.PLAYING || gameState === GameState.MEETING || gameState === GameState.GAMEOVER) && (
             <button 
               onClick={leaveGame}
@@ -1537,107 +1883,109 @@ const AppContent: React.FC = () => {
       </div>
 
       {/* ACTION BUTTONS */}
-      <div className="absolute bottom-10 right-10 flex flex-col gap-6 z-[60] items-end">
-        <div className="flex gap-6 items-end">
-          {local?.isInVent && (
-            <button onClick={moveVent} className="w-32 h-32 bg-purple-700 border-8 border-purple-500 rounded-full text-white font-black flex flex-col items-center justify-center shadow-xl pointer-events-auto active:scale-95">
-              <span className="text-xl">MOVE</span>
-              <span className="text-[10px] opacity-50 font-black mt-1">[V]</span>
-            </button>
-          )}
-          {local?.role === PlayerRole.IMPOSTOR && (
-            <button onClick={handleKill} disabled={!!(killCooldown > 0 || !local?.isAlive || local?.isInVent)} className={`relative w-32 h-32 rounded-full border-8 text-white font-black flex flex-col items-center justify-center transition-all ${killCooldown > 0 || !local?.isAlive || local?.isInVent ? 'bg-gray-800 border-gray-600 grayscale' : 'bg-red-700 border-red-500 shadow-xl pointer-events-auto active:scale-95'}`}>
-              {killCooldown > 0 && (
-                <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
-                  <circle
-                    cx="50%" cy="50%" r="48%"
-                    fill="none"
-                    stroke="rgba(255,255,255,0.2)"
-                    strokeWidth="8"
-                  />
-                  <motion.circle
-                    cx="50%" cy="50%" r="48%"
-                    fill="none"
-                    stroke="white"
-                    strokeWidth="8"
-                    strokeDasharray="100 100"
-                    animate={{ strokeDashoffset: 100 - (killCooldown / (activeSettings.killCooldown * 1000)) * 100 }}
-                    transition={{ duration: 0.1, ease: "linear" }}
-                    pathLength="100"
-                  />
-                </svg>
-              )}
-              <span className="text-xl z-10">KILL</span>
-              {killCooldown > 0 && <span className="text-2xl z-10">{Math.ceil(killCooldown/1000)}</span>}
-            </button>
-          )}
-          {local?.role === PlayerRole.IMPOSTOR && (
-            <button onClick={() => { setShowSabotageMap(true); setShowMap(false); }} disabled={sabotageCooldown > 0 || !local.isAlive} className={`w-32 h-32 rounded-full border-8 text-white font-black flex flex-col items-center justify-center transition-all ${sabotageCooldown > 0 || !local.isAlive ? 'bg-gray-800 border-gray-600 grayscale' : 'bg-orange-600 border-orange-400 shadow-xl pointer-events-auto active:scale-95'}`}>
-              <span className="text-xl text-center leading-tight">SABOTAGE</span>
-              {sabotageCooldown > 0 && <span className="text-2xl">{Math.ceil(sabotageCooldown/1000)}</span>}
-              <span className="text-[10px] opacity-50 font-black mt-1">[TAB]</span>
-            </button>
-          )}
-          {nearbyBody && (
-            <button onClick={() => report()} className="w-32 h-32 bg-yellow-600 border-8 border-yellow-400 rounded-full text-white font-black flex flex-col items-center justify-center shadow-xl pointer-events-auto active:scale-95 animate-bounce">
-              <span className="text-xl">REPORT</span>
-            </button>
-          )}
-            <button 
-              onClick={useAction} 
-              disabled={!!((!nearbyTask && !nearbyVent && !isNearMeetingButton && !local?.isInVent) || !local?.isAlive || (!local?.isInVent && nearbyVent && ventCooldown > 0))}
-              className={`relative w-40 h-40 rounded-full border-8 text-white font-black flex flex-col items-center justify-center transition-all shadow-xl pointer-events-auto active:scale-95 ${(!nearbyTask && !nearbyVent && !isNearMeetingButton && !local?.isInVent) || !local?.isAlive || (!local?.isInVent && nearbyVent && ventCooldown > 0) ? 'bg-gray-800 border-gray-600 grayscale' : (nearbyVent || local?.isInVent ? 'bg-red-800 border-red-500' : 'bg-blue-600 border-blue-400')}`}
-            >
-              {local?.isInVent && (
-                <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
-                  <circle
-                    cx="50%" cy="50%" r="48%"
-                    fill="none"
-                    stroke="rgba(255,255,255,0.2)"
-                    strokeWidth="8"
-                  />
-                  <motion.circle
-                    cx="50%" cy="50%" r="48%"
-                    fill="none"
-                    stroke="#ef4444"
-                    strokeWidth="8"
-                    strokeDasharray="100 100"
-                    animate={{ strokeDashoffset: 100 - (ventTime / activeSettings.maxVentTime) * 100 }}
-                    transition={{ duration: 0.1, ease: "linear" }}
-                    pathLength="100"
-                  />
-                </svg>
-              )}
-              {nearbyVent && ventCooldown > 0 && !local?.isInVent && (
-                <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
-                  <circle
-                    cx="50%" cy="50%" r="48%"
-                    fill="none"
-                    stroke="rgba(255,255,255,0.2)"
-                    strokeWidth="8"
-                  />
-                  <motion.circle
-                    cx="50%" cy="50%" r="48%"
-                    fill="none"
-                    stroke="white"
-                    strokeWidth="8"
-                    strokeDasharray="100 100"
-                    animate={{ strokeDashoffset: 100 - (ventCooldown / (activeSettings.ventCooldown * 1000)) * 100 }}
-                    transition={{ duration: 0.1, ease: "linear" }}
-                    pathLength="100"
-                  />
-                </svg>
-              )}
-              <span className="text-2xl z-10">{local?.isInVent ? 'EXIT' : (nearbyVent ? 'VENT' : (isNearMeetingButton ? 'MEETING' : 'USE'))}</span>
-              {nearbyVent && ventCooldown > 0 && !local?.isInVent && <span className="text-xl z-10">{Math.ceil(ventCooldown/1000)}</span>}
-              {local?.isInVent && <span className="text-xl z-10">{Math.ceil(activeSettings.maxVentTime - ventTime)}s</span>}
-              <span className="text-[10px] opacity-50 font-black mt-1 z-10">[E]</span>
-            </button>
+      {gameState !== GameState.MEETING && (
+        <div className="absolute bottom-10 right-10 flex flex-col gap-6 z-[60] items-end">
+          <div className="flex gap-6 items-end">
+            {local?.isInVent && (
+              <button onClick={moveVent} className="w-32 h-32 bg-purple-700 border-8 border-purple-500 rounded-full text-white font-black flex flex-col items-center justify-center shadow-xl pointer-events-auto active:scale-95">
+                <span className="text-xl">MOVE</span>
+                <span className="text-[10px] opacity-50 font-black mt-1">[V]</span>
+              </button>
+            )}
+            {local?.role === PlayerRole.IMPOSTOR && (
+              <button onClick={handleKill} disabled={!!(killCooldown > 0 || !local?.isAlive || local?.isInVent)} className={`relative w-32 h-32 rounded-full border-8 text-white font-black flex flex-col items-center justify-center transition-all ${killCooldown > 0 || !local?.isAlive || local?.isInVent ? 'bg-gray-800 border-gray-600 grayscale' : 'bg-red-700 border-red-500 shadow-xl pointer-events-auto active:scale-95'}`}>
+                {killCooldown > 0 && (
+                  <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
+                    <circle
+                      cx="50%" cy="50%" r="48%"
+                      fill="none"
+                      stroke="rgba(255,255,255,0.2)"
+                      strokeWidth="8"
+                    />
+                    <motion.circle
+                      cx="50%" cy="50%" r="48%"
+                      fill="none"
+                      stroke="white"
+                      strokeWidth="8"
+                      strokeDasharray="100 100"
+                      animate={{ strokeDashoffset: 100 - (killCooldown / (activeSettings.killCooldown * 1000)) * 100 }}
+                      transition={{ duration: 0.1, ease: "linear" }}
+                      pathLength="100"
+                    />
+                  </svg>
+                )}
+                <span className="text-xl z-10">KILL</span>
+                {killCooldown > 0 && <span className="text-2xl z-10">{Math.ceil(killCooldown/1000)}</span>}
+              </button>
+            )}
+            {local?.role === PlayerRole.IMPOSTOR && (
+              <button onClick={() => { setShowSabotageMap(true); setShowMap(false); }} disabled={sabotageCooldown > 0 || !local.isAlive} className={`w-32 h-32 rounded-full border-8 text-white font-black flex flex-col items-center justify-center transition-all ${sabotageCooldown > 0 || !local.isAlive ? 'bg-gray-800 border-gray-600 grayscale' : 'bg-orange-600 border-orange-400 shadow-xl pointer-events-auto active:scale-95'}`}>
+                <span className="text-xl text-center leading-tight">SABOTAGE</span>
+                {sabotageCooldown > 0 && <span className="text-2xl">{Math.ceil(sabotageCooldown/1000)}</span>}
+                <span className="text-[10px] opacity-50 font-black mt-1">[TAB]</span>
+              </button>
+            )}
+            {nearbyBody && (
+              <button onClick={() => report()} className="w-32 h-32 bg-yellow-600 border-8 border-yellow-400 rounded-full text-white font-black flex flex-col items-center justify-center shadow-xl pointer-events-auto active:scale-95 animate-bounce">
+                <span className="text-xl">REPORT</span>
+              </button>
+            )}
+              <button 
+                onClick={useAction} 
+                disabled={!!((!nearbyTask && !nearbyVent && !isNearMeetingButton && !local?.isInVent && !nearbySabotageFix) || !local?.isAlive || (!local?.isInVent && nearbyVent && ventCooldown > 0))}
+                className={`relative w-40 h-40 rounded-full border-8 text-white font-black flex flex-col items-center justify-center transition-all shadow-xl pointer-events-auto active:scale-95 ${(!nearbyTask && !nearbyVent && !isNearMeetingButton && !local?.isInVent && !nearbySabotageFix) || !local?.isAlive || (!local?.isInVent && nearbyVent && ventCooldown > 0) ? 'bg-gray-800 border-gray-600 grayscale' : (nearbyVent || local?.isInVent ? 'bg-red-800 border-red-500' : (nearbySabotageFix ? 'bg-orange-600 border-orange-400' : 'bg-blue-600 border-blue-400'))}`}
+              >
+                {local?.isInVent && (
+                  <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
+                    <circle
+                      cx="50%" cy="50%" r="48%"
+                      fill="none"
+                      stroke="rgba(255,255,255,0.2)"
+                      strokeWidth="8"
+                    />
+                    <motion.circle
+                      cx="50%" cy="50%" r="48%"
+                      fill="none"
+                      stroke="#ef4444"
+                      strokeWidth="8"
+                      strokeDasharray="100 100"
+                      animate={{ strokeDashoffset: 100 - (ventTime / activeSettings.maxVentTime) * 100 }}
+                      transition={{ duration: 0.1, ease: "linear" }}
+                      pathLength="100"
+                    />
+                  </svg>
+                )}
+                {nearbyVent && ventCooldown > 0 && !local?.isInVent && (
+                  <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
+                    <circle
+                      cx="50%" cy="50%" r="48%"
+                      fill="none"
+                      stroke="rgba(255,255,255,0.2)"
+                      strokeWidth="8"
+                    />
+                    <motion.circle
+                      cx="50%" cy="50%" r="48%"
+                      fill="none"
+                      stroke="white"
+                      strokeWidth="8"
+                      strokeDasharray="100 100"
+                      animate={{ strokeDashoffset: 100 - (ventCooldown / (activeSettings.ventCooldown * 1000)) * 100 }}
+                      transition={{ duration: 0.1, ease: "linear" }}
+                      pathLength="100"
+                    />
+                  </svg>
+                )}
+                <span className="text-2xl z-10">{nearbySabotageFix ? 'FIX' : (local?.isInVent ? 'EXIT' : (nearbyVent ? 'VENT' : (isNearMeetingButton ? 'MEETING' : 'USE')))}</span>
+                {nearbyVent && ventCooldown > 0 && !local?.isInVent && <span className="text-xl z-10">{Math.ceil(ventCooldown/1000)}</span>}
+                {local?.isInVent && <span className="text-xl z-10">{Math.ceil(activeSettings.maxVentTime - ventTime)}s</span>}
+                <span className="text-[10px] opacity-50 font-black mt-1 z-10">[E]</span>
+              </button>
+          </div>
+          <button onClick={() => { setShowMap(true); setShowSabotageMap(false); }} className="w-24 h-24 bg-gray-800 border-4 border-gray-600 rounded-2xl text-white font-black flex flex-col items-center justify-center shadow-xl pointer-events-auto active:scale-95">
+            <span className="text-xs uppercase">Map [M]</span>
+          </button>
         </div>
-        <button onClick={() => { setShowMap(true); setShowSabotageMap(false); }} className="w-24 h-24 bg-gray-800 border-4 border-gray-600 rounded-2xl text-white font-black flex flex-col items-center justify-center shadow-xl pointer-events-auto active:scale-95">
-          <span className="text-xs uppercase">Map [M]</span>
-        </button>
-      </div>
+      )}
 
       {/* LOBBY UI */}
       {gameState === GameState.LOBBY_WAITING && (
@@ -1922,6 +2270,13 @@ const AppContent: React.FC = () => {
              </Canvas>
            </div>
            <h2 className={`text-[10rem] font-black italic uppercase animate-bounce ${local.role === PlayerRole.IMPOSTOR ? 'text-red-600' : 'text-blue-500'}`}>{local.role}</h2>
+        </div>
+      )}
+      {ejectionText && (
+        <div className="fixed inset-0 z-[250] bg-black/90 flex flex-col items-center justify-center animate-in fade-in duration-500">
+           <h2 className="text-6xl font-black text-white uppercase italic text-center px-10 leading-tight">
+             {ejectionText}
+           </h2>
         </div>
       )}
       {winner && gameState === GameState.GAMEOVER && (

@@ -35,15 +35,21 @@ const MapOverlay: React.FC<MapOverlayProps> = ({
     const locations: Record<string, { type: SabotageType, pos: { x: number, y: number } }[]> = {
       'The Skeld': [
         { type: SabotageType.LIGHTS, pos: { x: 1000 * SCALE, y: 1100 * SCALE } }, // Electrical
-        { type: SabotageType.COMMS, pos: { x: 1000 * SCALE, y: 300 * SCALE } }, // Cafeteria (proxy for comms)
+        { type: SabotageType.COMMS, pos: { x: 1350 * SCALE, y: 700 * SCALE } }, // Admin (proxy for comms)
+        { type: SabotageType.O2, pos: { x: 1100 * SCALE, y: 100 * SCALE } }, // Cafeteria (proxy for O2)
+        { type: SabotageType.REACTOR, pos: { x: 250 * SCALE, y: 1400 * SCALE } }, // Reactor
       ],
       'Polus': [
         { type: SabotageType.LIGHTS, pos: { x: 190 * SCALE, y: 1400 * SCALE } }, // Electrical
-        { type: SabotageType.COMMS, pos: { x: 2400 * SCALE, y: 1725 * SCALE } }, // Communications
+        { type: SabotageType.COMMS, pos: { x: 2500 * SCALE, y: 1725 * SCALE } }, // Communications
+        { type: SabotageType.O2, pos: { x: 2200 * SCALE, y: 1200 * SCALE } }, // O2
+        { type: SabotageType.REACTOR, pos: { x: 150 * SCALE, y: 1300 * SCALE } }, // Reactor
       ],
       'Airship': [
-        { type: SabotageType.LIGHTS, pos: { x: 340 * SCALE, y: 600 * SCALE } }, // Security (proxy for lights)
-        { type: SabotageType.COMMS, pos: { x: 1660 * SCALE, y: 600 * SCALE } }, // Records (proxy for comms)
+        { type: SabotageType.LIGHTS, pos: { x: 200 * SCALE, y: 1450 * SCALE } }, // Engine Room
+        { type: SabotageType.COMMS, pos: { x: 300 * SCALE, y: 550 * SCALE } }, // Security
+        { type: SabotageType.O2, pos: { x: 1000 * SCALE, y: 1050 * SCALE } }, // Kitchen
+        { type: SabotageType.REACTOR, pos: { x: 450 * SCALE, y: 1400 * SCALE } }, // Engine Room
       ]
     };
     // Determine current map name from mapData or props (mapData doesn't have name, but we can infer from rooms)
@@ -179,7 +185,7 @@ const MapOverlay: React.FC<MapOverlayProps> = ({
                   }}
                 >
                   <span className="text-[8px] font-black text-white text-center leading-tight">
-                    {sab.type === SabotageType.LIGHTS ? 'LIGHTS' : 'COMMS'}
+                    {sab.type}
                   </span>
                 </button>
               ))}
