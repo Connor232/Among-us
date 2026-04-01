@@ -15,8 +15,7 @@ import MapOverlay from './components/MapOverlay';
 import PlayerModel from './components/PlayerModel';
 import ChatOverlay from './components/ChatOverlay';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle2, AlertTriangle, Trophy } from 'lucide-react';
-import { initBack4App, savePlayerStats, getLeaderboard, PlayerStats as Back4AppPlayerStats } from './services/back4appService';
+import { CheckCircle2, AlertTriangle } from 'lucide-react';
 
 const MemoizedMeetingRoom = React.memo(MeetingRoom);
 const MemoizedTaskUI = React.memo(TaskUI);
@@ -231,33 +230,6 @@ const AppContent: React.FC = () => {
   const [isJoining, setIsJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [leaderboard, setLeaderboard] = useState<Back4AppPlayerStats[]>([]);
-  const [showLeaderboard, setShowLeaderboard] = useState(false);
-
-  useEffect(() => {
-    initBack4App();
-  }, []);
-
-  useEffect(() => {
-    if (gameState === GameState.GAMEOVER && winner) {
-      const local = players.find(p => p.id === localPlayerId);
-      if (local) {
-        savePlayerStats({
-          playerName: local.name,
-          totalGames: 1,
-          totalWins: local.role === winner ? 1 : 0,
-          totalKills: 0, // Tracking kills would require more state, keeping it simple for now
-          tasksCompleted: local.tasksCompleted,
-        });
-      }
-    }
-  }, [gameState, winner, players, localPlayerId, deadBodies.length]);
-
-  useEffect(() => {
-    if (showLeaderboard) {
-      getLeaderboard().then(setLeaderboard);
-    }
-  }, [showLeaderboard]);
 
   // --- REFS ---
   const keysPressed = useRef<{ [key: string]: boolean }>({});
@@ -1651,14 +1623,6 @@ const AppContent: React.FC = () => {
               }
             }} className="bg-red-600 hover:bg-red-500 p-6 rounded-3xl text-3xl uppercase italic shadow-lg active:scale-95 transition-all">Create Lobby</button>
             
-            <button 
-              onClick={() => setShowLeaderboard(true)} 
-              className="bg-yellow-600 hover:bg-yellow-500 p-4 rounded-3xl text-xl uppercase italic shadow-lg active:scale-95 transition-all flex items-center justify-center gap-3"
-            >
-              <Trophy size={24} />
-              Leaderboard
-            </button>
-
             <div className="flex gap-4">
               <input type="text" placeholder="CODE" value={joinCodeInput} onChange={e => setJoinCodeInput(e.target.value.toUpperCase())} className="flex-1 bg-gray-950 p-6 rounded-3xl text-center text-3xl uppercase border-4 border-transparent focus:border-green-500 outline-none" maxLength={6} />
               <button onClick={() => handleJoinAttempt(joinCodeInput)} disabled={isJoining} className={`bg-green-600 px-10 py-6 rounded-3xl text-3xl font-bold active:scale-95 transition-all ${isJoining ? 'opacity-50 animate-pulse' : ''}`}>{isJoining ? '...' : 'JOIN'}</button>
@@ -1701,62 +1665,6 @@ const AppContent: React.FC = () => {
              <p className="text-[10px] text-gray-600 text-center uppercase tracking-widest mt-auto">Only public lobbies appear here</p>
           </div>
         </div>
-
-        <AnimatePresence>
-          {showLeaderboard && (
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-md"
-            >
-              <motion.div 
-                initial={{ scale: 0.9, y: 20 }}
-                animate={{ scale: 1, y: 0 }}
-                className="bg-gray-900 border-8 border-yellow-600/50 p-10 rounded-[4rem] w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col gap-6 shadow-[0_0_50px_rgba(202,138,4,0.3)]"
-              >
-                <div className="flex justify-between items-center">
-                  <h2 className="text-5xl italic uppercase font-black text-yellow-500">Global Hall of Fame</h2>
-                  <button onClick={() => setShowLeaderboard(false)} className="text-gray-500 hover:text-white text-4xl">&times;</button>
-                </div>
-                
-                <div className="flex-1 overflow-y-auto pr-4 custom-scrollbar">
-                  {leaderboard.length === 0 ? (
-                    <div className="text-center py-20 text-gray-500 italic uppercase">No legends yet...</div>
-                  ) : (
-                    <table className="w-full text-left border-separate border-spacing-y-2">
-                      <thead>
-                        <tr className="text-gray-500 uppercase text-xs tracking-widest italic">
-                          <th className="pb-4 pl-4">Player</th>
-                          <th className="pb-4 text-center">Wins</th>
-                          <th className="pb-4 text-center">Tasks</th>
-                          <th className="pb-4 text-center">Games</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {leaderboard.map((entry, i) => (
-                          <tr key={i} className="bg-white/5 hover:bg-white/10 transition-colors">
-                            <td className="py-4 pl-6 rounded-l-2xl font-black text-xl italic flex items-center gap-4">
-                              <span className={`w-8 h-8 flex items-center justify-center rounded-full text-xs ${i === 0 ? 'bg-yellow-500 text-black' : i === 1 ? 'bg-gray-400 text-black' : i === 2 ? 'bg-amber-700 text-white' : 'bg-gray-800 text-gray-400'}`}>
-                                {i + 1}
-                              </span>
-                              {entry.playerName}
-                            </td>
-                            <td className="py-4 text-center text-yellow-400 font-bold text-2xl">{entry.totalWins}</td>
-                            <td className="py-4 text-center text-blue-400 font-bold">{entry.tasksCompleted}</td>
-                            <td className="py-4 text-center text-gray-500 rounded-r-2xl">{entry.totalGames}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-                
-                <p className="text-[10px] text-gray-600 text-center uppercase tracking-widest">Powered by Back4App</p>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
     );
   }

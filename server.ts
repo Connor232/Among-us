@@ -16,7 +16,7 @@ async function startServer() {
   const app = express();
   app.set('trust proxy', 1); 
   const server = http.createServer(app);
-  const PORT = 3000; 
+  const PORT = parseInt(process.env.PORT || "3000"); 
 
   console.log("Setting up WebSocket server...");
   const wss = new WebSocketServer({ server });
