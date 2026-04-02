@@ -21,7 +21,11 @@ async function startServer() {
   console.log("Setting up WebSocket server...");
   const wss = new WebSocketServer({ server });
 
-  // Health check route
+  // Health check routes
+  app.get("/health", (req, res) => {
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
@@ -113,6 +117,19 @@ async function startServer() {
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT} (0.0.0.0)`);
+    
+    // Self-ping "hack" for Render/Railway free tiers
+    const externalUrl = process.env.RENDER_EXTERNAL_URL || process.env.APP_URL;
+    if (externalUrl) {
+      console.log(`Self-ping initialized for: ${externalUrl}`);
+      setInterval(() => {
+        http.get(`${externalUrl}/health`, (res) => {
+          console.log(`Self-ping status: ${res.statusCode}`);
+        }).on('error', (err) => {
+          console.error(`Self-ping error: ${err.message}`);
+        });
+      }, 14 * 60 * 1000); // Ping every 14 minutes
+    }
   });
 }
 

@@ -1,6 +1,28 @@
-# Among Us 3D - Back4App Edition
+# Among Us 3D - Deployment Edition
 
-This project is ready to be deployed to **Back4App Containers** via GitHub!
+This project is ready to be deployed to **Render** or **Back4App** via GitHub!
+
+## How to deploy to Render (Free Tier)
+
+1. **Push to GitHub**: Create a new repository on GitHub and push all these files to it.
+2. **Connect to Render**: Go to [Render.com](https://render.com/), click **"New +"** -> **"Web Service"**, and connect your GitHub repo.
+3. **Configure**:
+   - **Runtime**: `Node`
+   - **Build Command**: `npm install && npm run build`
+   - **Start Command**: `npm start`
+   - **Instance Type**: `Free`
+4. **Environment Variables**:
+   - Add `NODE_ENV` = `production`
+   - Add `RENDER_EXTERNAL_URL` = (Your Render URL, e.g., `https://my-game.onrender.com`)
+5. **Deploy**: Render will build the app and start the server.
+
+### The "Uptime Robot Hack" (Keep Awake)
+Render's free tier spins down after 15 minutes of inactivity. To keep it awake:
+1. Go to [UptimeRobot.com](https://uptimerobot.com/).
+2. Create a new **HTTP(s) Monitor**.
+3. Set the URL to `https://your-app-name.onrender.com/health`.
+4. Set the interval to **5 minutes**.
+5. This will ping your app every 5 minutes, preventing it from sleeping!
 
 ## How to deploy to Back4App
 

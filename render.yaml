@@ -1,9 +1,12 @@
 services:
   - type: web
     name: among-us-3d
-    env: node
-    buildCommand: npm install --include=dev && npm run build
-    startCommand: npm run start
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: PORT
+        value: 3000
+    healthCheckPath: /health
